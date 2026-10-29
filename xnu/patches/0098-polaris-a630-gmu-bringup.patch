@@ -2,7 +2,7 @@ diff --git a/iokit/Kernel/arm/PolarisAdreno.cpp b/iokit/Kernel/arm/PolarisAdreno
 new file mode 100644
 --- /dev/null
 +++ b/iokit/Kernel/arm/PolarisAdreno.cpp
-@@ -0,0 +1,1790 @@
+@@ -0,0 +1,1798 @@
 +/*
 + * polaris: the Adreno 630 of the Xiaomi Mi MIX 2S (SDM845 v2, A630v2) for
 + * programs to draw with, behind the hardware interface (redwood_gpu_*) that
@@ -27,6 +27,7 @@ new file mode 100644
 +#include <IOKit/IOLib.h>
 +#include <IOKit/IOBufferMemoryDescriptor.h>
 +#include <IOKit/IOLocks.h>
++#include <arm/pmap.h>
 +#include <pexpert/pexpert.h>
 +#include <kern/thread.h>
 +#include <mach/mach_time.h>
@@ -375,13 +376,20 @@ new file mode 100644
 +{
 +	size = (size + PAGE_SIZE - 1) & ~(uint64_t)(PAGE_SIZE - 1);
 +	b->md = NULL;
++	/*
++	 * Pass NULL for the physical address: with a non-NULL pointer
++	 * IOMallocContiguous falls back to inTaskWithPhysicalMask(), whose low
++	 * memory pool is below phys_base and panics in physToKV_range().  The
++	 * NULL path uses kmem_alloc_contig() in the managed kernel map.
++	 */
 +#pragma clang diagnostic push
 +#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-+	b->va = (uint8_t *)IOMallocContiguous((vm_size_t)size, PAGE_SIZE, (IOPhysicalAddress *)&b->pa);
++	b->va = (uint8_t *)IOMallocContiguous((vm_size_t)size, PAGE_SIZE, NULL);
 +#pragma clang diagnostic pop
 +	if (b->va == NULL) {
 +		return false;
 +	}
++	b->pa = (uint64_t)kvtophys((vm_offset_t)b->va);
 +	b->size = size;
 +	bzero(b->va, size);
 +	return true;
