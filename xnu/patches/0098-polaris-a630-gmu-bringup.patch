@@ -301,7 +301,7 @@ new file mode 100644
 +#define VA_KERNEL           0xF0000000ull
 +#define GMEM_SIZE           0x100000            /* A630: 1 MiB */
 +#define GMEM_BASE           0x100000
-+#define LOW_MASK            0x00000000fffff000ull
++#define LOW_MASK            0x0000000ffffffff000ull    /* 36-bit PA; DRAM starts at 4 GiB */
 +
 +#define FW_DIR              "/usr/share/firmware/polaris/"
 +
@@ -710,7 +710,7 @@ new file mode 100644
 +mmu_map(uint64_t va, uint64_t pa, bool ro)
 +{
 +	uint64_t *t = l3_for(va, true);
-+	if (t == NULL || (pa >> 32) != 0) {
++	if (t == NULL) {
 +		return false;
 +	}
 +	t[(va >> 12) & 511] = pa | PTE_PAGE | (ro ? PTE_AP_RO : 0);
