@@ -27,7 +27,6 @@ new file mode 100644
 +#include <IOKit/IOLib.h>
 +#include <IOKit/IOBufferMemoryDescriptor.h>
 +#include <IOKit/IOLocks.h>
-+#include <arm/pmap.h>
 +#include <pexpert/pexpert.h>
 +#include <kern/thread.h>
 +#include <mach/mach_time.h>
@@ -36,6 +35,7 @@ new file mode 100644
 +
 +extern "C" {
 +vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
++uint64_t kvtophys(vm_offset_t va);
 +int polaris_fw_read(const char *path, void **data, size_t *size);
 +void polaris_fw_free(void *data, size_t size);
 +int polaris_root_mounted(void);
