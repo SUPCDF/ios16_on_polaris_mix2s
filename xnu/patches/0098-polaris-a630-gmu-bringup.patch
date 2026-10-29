@@ -2,7 +2,7 @@ diff --git a/iokit/Kernel/arm/PolarisAdreno.cpp b/iokit/Kernel/arm/PolarisAdreno
 new file mode 100644
 --- /dev/null
 +++ b/iokit/Kernel/arm/PolarisAdreno.cpp
-@@ -0,0 +1,1798 @@
+@@ -0,0 +1,1803 @@
 +/*
 + * polaris: the Adreno 630 of the Xiaomi Mi MIX 2S (SDM845 v2, A630v2) for
 + * programs to draw with, behind the hardware interface (redwood_gpu_*) that
@@ -197,9 +197,11 @@ new file mode 100644
 +#define PTE_AP_RO       (1ull << 7)
 +#define PTE_SH_OUTER    (2ull << 8)
 +#define PTE_AF          (1ull << 10)
-+#define PTE_PAGE        (PTE_VALID | PTE_TABLE | PTE_AP_UNPRIV | PTE_SH_OUTER | PTE_AF)
++#define PTE_NOT_GLOBAL  (1ull << 11)
++/* Privileged by default (the GMU's requests are); the 3D core adds AP_UNPRIV. */
++#define PTE_PAGE        (PTE_VALID | PTE_TABLE | PTE_SH_OUTER | PTE_AF | PTE_NOT_GLOBAL)
 +
-+#define SMMU_CB(n)      (0x8000u + 0x400u * (n))
++#define SMMU_CB(n)      (0x8000u + 0x1000u * (n))   /* ARM SMMU-500: context banks are one page apart */
 +#define SMMU_CBAR(n)    (0x1000u + 4u * (n))
 +#define SMMU_CBA2R(n)   (0x1800u + 4u * (n))
 +#define SMMU_SMR(n)     (0x0800u + 4u * (n))
@@ -716,13 +718,14 @@ new file mode 100644
 +}
 +
 +static bool
-+mmu_map(uint64_t va, uint64_t pa, bool ro)
++mmu_map(uint64_t va, uint64_t pa, bool ro, bool core)
 +{
 +	uint64_t *t = l3_for(va, true);
 +	if (t == NULL) {
 +		return false;
 +	}
-+	t[(va >> 12) & 511] = pa | PTE_PAGE | (ro ? PTE_AP_RO : 0);
++	t[(va >> 12) & 511] = pa | PTE_PAGE | (core ? PTE_AP_UNPRIV : 0) |
++	    (ro ? PTE_AP_RO : 0);
 +	tables_dirty = true;
 +	return true;
 +}
@@ -767,27 +770,28 @@ new file mode 100644
 +}
 +
 +static bool
-+smmu_context_on(unsigned ctx, unsigned stream, unsigned match, unsigned mask)
++smmu_context_on(unsigned ctx, unsigned stream, unsigned match, unsigned mask, uint32_t sctlr)
 +{
 +	uint32_t cb = SMMU_CB(ctx);
++	uint64_t root = l1.pa | ((uint64_t)ctx << 48);
 +
 +	wr(smmu, cb + SMMU_CB_SCTLR, 0);
-+	wr(smmu, cb + SMMU_CB_FSR, 0xffffffff);
++	wr(smmu, cb + SMMU_CB_FSR, 0xc00001fe);
 +	wr(smmu, SMMU_CBA2R(ctx), 1);
-+	wr(smmu, SMMU_CBAR(ctx), 0x0001f000);
-+	wr(smmu, cb + SMMU_CB_TTBR0, (uint32_t)l1.pa);
-+	wr(smmu, cb + SMMU_CB_TTBR0 + 4, (uint32_t)(l1.pa >> 32));
-+	wr(smmu, cb + SMMU_CB_TCR2, 1);
++	wr(smmu, SMMU_CBAR(ctx), 0x0001f300);
++	wr(smmu, cb + SMMU_CB_TTBR0, (uint32_t)root);
++	wr(smmu, cb + SMMU_CB_TTBR0 + 4, (uint32_t)(root >> 32));
++	wr(smmu, cb + SMMU_CB_TCR2, 0x00038011);
 +	wr(smmu, cb + SMMU_CB_TCR, 32 | (1u << 23));
-+	wr(smmu, cb + SMMU_CB_MAIR0, 0x44);
++	wr(smmu, cb + SMMU_CB_MAIR0, 0xf404ff44);
 +	wr(smmu, cb + SMMU_CB_MAIR1, 0);
 +	wr(smmu, cb + SMMU_CB_TLBIALL, 0);
-+	wr(smmu, cb + SMMU_CB_TLBSYNC, 0);
++	wr(smmu, cb + SMMU_CB_TLBSYNC, 1);
 +	if (!poll(smmu, cb + SMMU_CB_TLBSTATUS, 1, 0, 1000)) {
 +		IOLog("POLARIS GPU: SMMU CB%u TLB sync stuck (%08x)\n", ctx, rd(smmu, cb + SMMU_CB_TLBSTATUS));
 +		return false;
 +	}
-+	wr(smmu, cb + SMMU_CB_SCTLR, 0x67);
++	wr(smmu, cb + SMMU_CB_SCTLR, sctlr);
 +	wr(smmu, SMMU_S2CR(match), ctx);
 +	wr(smmu, SMMU_SMR(match), (1u << 31) | (mask << 16) | stream);
 +	__asm__ volatile ("dsb sy" ::: "memory");
@@ -812,7 +816,8 @@ new file mode 100644
 +
 +	smmu_tables_sync();
 +	wr(smmu, 0x0, scr0 & ~1u);                              /* CLIENTPD = 0 */
-+	if (!smmu_context_on(0, 0, 0, 1) || !smmu_context_on(1, 5, 5, 0)) {
++	if (!smmu_context_on(0, 0, 0, 1, 0x67) ||
++	    !smmu_context_on(1, 5, 1, 0x400, 0x1027)) {
 +		return false;
 +	}
 +	IOLog("POLARIS GPU: SMMU sCR0 %08x IDR0 %08x IDR1 %08x IDR2 %08x\n",
@@ -821,12 +826,12 @@ new file mode 100644
 +}
 +
 +static bool
-+kbuf_map(struct kbuf *b)
++kbuf_map(struct kbuf *b, bool core)
 +{
 +	b->iova = kernel_va_next;
 +	kernel_va_next += b->size + 4096;
 +	for (uint64_t off = 0; off < b->size; off += 4096) {
-+		if (!mmu_map(b->iova + off, b->pa + off, false)) {
++		if (!mmu_map(b->iova + off, b->pa + off, false, core)) {
 +			return false;
 +		}
 +	}
@@ -1288,8 +1293,8 @@ new file mode 100644
 +static bool
 +gmu_bringup(void)
 +{
-+	if (!kbuf_alloc(&hfi_mem, 0x4000) || !kbuf_map(&hfi_mem) ||
-+	    !kbuf_alloc(&dump_mem, 0x4000) || !kbuf_map(&dump_mem)) {
++	if (!kbuf_alloc(&hfi_mem, 0x4000) || !kbuf_map(&hfi_mem, false) ||
++	    !kbuf_alloc(&dump_mem, 0x4000) || !kbuf_map(&dump_mem, false)) {
 +		IOLog("POLARIS GPU: GMU shared memory allocation failed\n");
 +		return false;
 +	}
@@ -1517,9 +1522,9 @@ new file mode 100644
 +		polaris_fw_free(fw, fw_size);
 +		return false;
 +	}
-+	if ((sqe.va == NULL && (!kbuf_alloc(&sqe, fw_size - 4) || !kbuf_map(&sqe))) ||
-+	    (ring.va == NULL && (!kbuf_alloc(&ring, RB_BYTES) || !kbuf_map(&ring))) ||
-+	    (mem.va == NULL && (!kbuf_alloc(&mem, PAGE_SIZE) || !kbuf_map(&mem)))) {
++	if ((sqe.va == NULL && (!kbuf_alloc(&sqe, fw_size - 4) || !kbuf_map(&sqe, true))) ||
++	    (ring.va == NULL && (!kbuf_alloc(&ring, RB_BYTES) || !kbuf_map(&ring, true))) ||
++	    (mem.va == NULL && (!kbuf_alloc(&mem, PAGE_SIZE) || !kbuf_map(&mem, true)))) {
 +		IOLog("POLARIS GPU: CP buffers failed\n");
 +		polaris_fw_free(fw, fw_size);
 +		return false;
@@ -1627,7 +1632,7 @@ new file mode 100644
 +bool
 +redwood_gpu_map(uint64_t address, uint64_t phys, bool read_only)
 +{
-+	return mmu_map(address, phys, read_only);
++	return mmu_map(address, phys, read_only, true);
 +}
 +
 +void
