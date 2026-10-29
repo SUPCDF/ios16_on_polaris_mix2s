@@ -1,0 +1,15 @@
+diff --git a/bsd/dev/polaris_gpu_arc_diag.c b/bsd/dev/polaris_gpu_arc_diag.c
+--- a/bsd/dev/polaris_gpu_arc_diag.c
++++ b/bsd/dev/polaris_gpu_arc_diag.c
+@@ -140,4 +140,9 @@
+ 				if (!counts[k]) {
+-					printf("POLARIS GPU ARC: empty %s; no GPU access\n", arc_names[k]);
+-					return;
++					/* The SDM845's CX rail has no aux levels; it is fixed. */
++					if (k == 1) {
++						printf("POLARIS GPU ARC: cx.lvl has no aux levels (fixed CX); continuing\n");
++					} else {
++						printf("POLARIS GPU ARC: empty %s; no GPU access\n", arc_names[k]);
++						return;
++					}
+ 				}
