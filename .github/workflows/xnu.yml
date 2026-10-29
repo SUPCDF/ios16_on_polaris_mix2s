@@ -37,7 +37,7 @@ jobs:
     # macOS 13 Intel runners queue less than the arm64 macos-14 pool.  Use an
     # Xcode 15 iig explicitly: it matches the xnu-8796 IORPC ABI (Xcode 16's
     # iig emits IORPC.kernelContent, which this xnu lacks).
-    runs-on: macos-13
+    runs-on: macos-15
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
@@ -124,3 +124,4 @@ jobs:
           name: xnu-kernel
           path: out/
           if-no-files-found: warn
+
