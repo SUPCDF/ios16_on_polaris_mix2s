@@ -2,7 +2,7 @@ diff --git a/iokit/Kernel/arm/PolarisAdreno.cpp b/iokit/Kernel/arm/PolarisAdreno
 new file mode 100644
 --- /dev/null
 +++ b/iokit/Kernel/arm/PolarisAdreno.cpp
-@@ -0,0 +1,1750 @@
+@@ -0,0 +1,1790 @@
 +/*
 + * polaris: the Adreno 630 of the Xiaomi Mi MIX 2S (SDM845 v2, A630v2) for
 + * programs to draw with, behind the hardware interface (redwood_gpu_*) that
@@ -374,13 +374,14 @@ new file mode 100644
 +kbuf_alloc(struct kbuf *b, uint64_t size)
 +{
 +	size = (size + PAGE_SIZE - 1) & ~(uint64_t)(PAGE_SIZE - 1);
-+	b->md = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task,
-+	    kIODirectionInOut | kIOMemoryPhysicallyContiguous | kIOMapWriteCombineCache, size, PAGE_SIZE);
-+	if (b->md == NULL) {
++	b->md = NULL;
++#pragma clang diagnostic push
++#pragma clang diagnostic ignored "-Wdeprecated-declarations"
++	b->va = (uint8_t *)IOMallocContiguous((vm_size_t)size, PAGE_SIZE, (IOPhysicalAddress *)&b->pa);
++#pragma clang diagnostic pop
++	if (b->va == NULL) {
 +		return false;
 +	}
-+	b->va = (uint8_t *)b->md->getBytesNoCopy();
-+	b->pa = b->md->getPhysicalSegment(0, NULL, kIOMemoryMapperNone);
 +	b->size = size;
 +	bzero(b->va, size);
 +	return true;
@@ -737,6 +738,26 @@ new file mode 100644
 +	return true;
 +}
 +
++/* IOMallocContiguous memory is cacheable; the SMMU walks with non-cacheable
++ * descriptors, so every table has to reach memory before the walk starts. */
++static void
++smmu_tables_sync(void)
++{
++	if (l1.va != NULL) {
++		dcache_sync(l1.va, 4096);
++	}
++	for (unsigned i = 0; i < 4; i++) {
++		if (l2[i].va != NULL) {
++			dcache_sync(l2[i].va, 4096);
++		}
++	}
++	for (unsigned i = 0; i < 2048; i++) {
++		if (l3[i] != NULL) {
++			dcache_sync(l3[i]->va, 4096);
++		}
++	}
++}
++
 +static bool
 +smmu_context_on(unsigned ctx, unsigned stream, unsigned match, unsigned mask)
 +{
@@ -781,6 +802,7 @@ new file mode 100644
 +{
 +	uint32_t scr0 = rd(smmu, 0x0);
 +
++	smmu_tables_sync();
 +	wr(smmu, 0x0, scr0 & ~1u);                              /* CLIENTPD = 0 */
 +	if (!smmu_context_on(0, 0, 0, 1) || !smmu_context_on(1, 5, 5, 0)) {
 +		return false;
@@ -1374,6 +1396,7 @@ new file mode 100644
 +			goto out;
 +		}
 +		memcpy(meta.va, mdt, mdt_size);
++		dcache_sync(meta.va, meta.size);
 +		__asm__ volatile ("dsb sy" ::: "memory");
 +		scm(SCM_FN(SCM_SVC_PIL, PIL_SHUTDOWN), 1, GPU_PAS_ID, 0, 0, &res);
 +		st = scm(SCM_FN(SCM_SVC_PIL, PIL_INIT_IMAGE), 2 | (SCM_ARG_RW << 6), GPU_PAS_ID, meta.pa, 0, &res);
@@ -1403,7 +1426,12 @@ new file mode 100644
 +		ok = st == 0 && res == 0;
 +	}
 +out:
-+	OSSafeReleaseNULL(meta.md);
++	if (meta.va != NULL) {
++#pragma clang diagnostic push
++#pragma clang diagnostic ignored "-Wdeprecated-declarations"
++		IOFreeContiguous(meta.va, meta.size);
++#pragma clang diagnostic pop
++	}
 +	polaris_fw_free(mdt, mdt_size);
 +	polaris_fw_free(seg, seg_size);
 +	return ok;
@@ -1434,6 +1462,7 @@ new file mode 100644
 +static void
 +kick(void)
 +{
++	dcache_sync(ring.va, ring.size);
 +	__asm__ volatile ("dsb sy" ::: "memory");
 +	gpu_wr(0x807, wptr);
 +}
@@ -1480,15 +1509,17 @@ new file mode 100644
 +		polaris_fw_free(fw, fw_size);
 +		return false;
 +	}
-+	if ((sqe.md == NULL && (!kbuf_alloc(&sqe, fw_size - 4) || !kbuf_map(&sqe))) ||
-+	    (ring.md == NULL && (!kbuf_alloc(&ring, RB_BYTES) || !kbuf_map(&ring))) ||
-+	    (mem.md == NULL && (!kbuf_alloc(&mem, PAGE_SIZE) || !kbuf_map(&mem)))) {
++	if ((sqe.va == NULL && (!kbuf_alloc(&sqe, fw_size - 4) || !kbuf_map(&sqe))) ||
++	    (ring.va == NULL && (!kbuf_alloc(&ring, RB_BYTES) || !kbuf_map(&ring))) ||
++	    (mem.va == NULL && (!kbuf_alloc(&mem, PAGE_SIZE) || !kbuf_map(&mem)))) {
 +		IOLog("POLARIS GPU: CP buffers failed\n");
 +		polaris_fw_free(fw, fw_size);
 +		return false;
 +	}
 +	memcpy(sqe.va, (const uint8_t *)fw + 4, fw_size - 4);
++	dcache_sync(sqe.va, sqe.size);
 +	polaris_fw_free(fw, fw_size);
++	smmu_tables_sync();
 +	tlb_flush();
 +	hw_init_regs();
 +	gpu_wr64(0x830, sqe.iova);
@@ -1596,6 +1627,7 @@ new file mode 100644
 +{
 +	if (tables_dirty) {
 +		tables_dirty = false;
++		smmu_tables_sync();
 +		tlb_flush();
 +	}
 +}
@@ -1609,6 +1641,7 @@ new file mode 100644
 +			t[((address + off) >> 12) & 511] = 0;
 +		}
 +	}
++	smmu_tables_sync();
 +	tlb_flush();
 +}
 +
@@ -1624,7 +1657,11 @@ new file mode 100644
 +bool
 +redwood_gpu_done(uint32_t fence)
 +{
-+	return mem.va != NULL && (int32_t)(*(volatile uint32_t *)mem.va - fence) >= 0;
++	if (mem.va == NULL) {
++		return false;
++	}
++	dcache_sync(mem.va, mem.size);
++	return (int32_t)(*(volatile uint32_t *)mem.va - fence) >= 0;
 +}
 +
 +uint32_t
@@ -1681,6 +1718,9 @@ new file mode 100644
 +redwood_gpu_report(const char *why)
 +{
 +	uint64_t ib1 = gpu_rd(0x928) | ((uint64_t)gpu_rd(0x929) << 32);
++	if (mem.va != NULL) {
++		dcache_sync(mem.va, mem.size);
++	}
 +	IOLog("POLARIS GPU: %s: fence %u done %u rptr %u wptr %u RBBM_STATUS %08x CP_HW_FAULT %08x IB1 %llx rem %u\n", why,
 +	    seqno, mem.va ? *(volatile uint32_t *)mem.va : 0, gpu_rd(0x806), wptr % RB_DWORDS, gpu_rd(0x210),
 +	    gpu_rd(0x821), ib1, gpu_rd(0x92A));
