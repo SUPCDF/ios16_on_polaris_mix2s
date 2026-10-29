@@ -2,7 +2,7 @@ diff --git a/iokit/Kernel/arm/PolarisAdreno.cpp b/iokit/Kernel/arm/PolarisAdreno
 new file mode 100644
 --- /dev/null
 +++ b/iokit/Kernel/arm/PolarisAdreno.cpp
-@@ -0,0 +1,1748 @@
+@@ -0,0 +1,1751 @@
 +/*
 + * polaris: the Adreno 630 of the Xiaomi Mi MIX 2S (SDM845 v2, A630v2) for
 + * programs to draw with, behind the hardware interface (redwood_gpu_*) that
@@ -495,8 +495,11 @@ new file mode 100644
 +static bool
 +arc_id(vm_offset_t base, uint32_t entry, const char *name)
 +{
-+	unsigned length = (unsigned)strlen(name);
++	unsigned length = 0;
 +
++	while (length <= 8 && name[length] != 0) {
++		length++;
++	}
 +	if (length > 8) {
 +		return false;
 +	}
@@ -1295,7 +1298,7 @@ new file mode 100644
 +
 +/* ---------------------------------------------------------------- TrustZone: zap shader (stage 2) */
 +
-+#define SCM_FN(svc, cmd)    (0x42000000u | ((uint32_t)(svc) << 8) | (uint32_t)(cmd))
++#define SCM_FN(svc, cmd)    (0xc2000000u | ((uint32_t)(svc) << 8) | (uint32_t)(cmd))
 +#define SCM_SVC_PIL         0x02
 +#define PIL_INIT_IMAGE      0x01
 +#define PIL_MEM_SETUP       0x02
@@ -1755,7 +1758,7 @@ diff --git a/bsd/dev/polaris_fw.c b/bsd/dev/polaris_fw.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/polaris_fw.c
-@@ -0,0 +1,148 @@
+@@ -0,0 +1,165 @@
 +/*
 + * polaris: firmware files for drivers, read from the root filesystem once it
 + * is mounted (the GPU's zap shader, SQE microcode and GMU firmware, installed
@@ -1789,25 +1792,42 @@ new file mode 100644
 +	return rootvnode != NULLVP;
 +}
 +
++static bool
++polaris_fw_basename_is(const char *path, const char *name)
++{
++	const char *base = path;
++
++	for (const char *p = path; *p != 0; p++) {
++		if (*p == '/') {
++			base = p + 1;
++		}
++	}
++	while (*base != 0 && *name != 0 && *base == *name) {
++		base++;
++		name++;
++	}
++	return *base == 0 && *name == 0;
++}
++
 +static const char *
 +polaris_fw_adt_name(const char *path)
 +{
-+	if (strstr(path, "a630_gmu.bin") != NULL) {
++	if (polaris_fw_basename_is(path, "a630_gmu.bin")) {
 +		return "GPU-GMU";
 +	}
-+	if (strstr(path, "a630_sqe.fw") != NULL) {
++	if (polaris_fw_basename_is(path, "a630_sqe.fw")) {
 +		return "GPU-SQE";
 +	}
-+	if (strstr(path, "a630_zap.mdt") != NULL) {
++	if (polaris_fw_basename_is(path, "a630_zap.mdt")) {
 +		return "GPU-ZAP-MDT";
 +	}
-+	if (strstr(path, "a630_zap.b00") != NULL) {
++	if (polaris_fw_basename_is(path, "a630_zap.b00")) {
 +		return "GPU-ZAP-B00";
 +	}
-+	if (strstr(path, "a630_zap.b01") != NULL) {
++	if (polaris_fw_basename_is(path, "a630_zap.b01")) {
 +		return "GPU-ZAP-B01";
 +	}
-+	if (strstr(path, "a630_zap.b02") != NULL) {
++	if (polaris_fw_basename_is(path, "a630_zap.b02")) {
 +		return "GPU-ZAP-B02";
 +	}
 +	return NULL;
