@@ -374,8 +374,8 @@ new file mode 100644
 +kbuf_alloc(struct kbuf *b, uint64_t size)
 +{
 +	size = (size + PAGE_SIZE - 1) & ~(uint64_t)(PAGE_SIZE - 1);
-+	b->md = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task,
-+	    kIODirectionInOut | kIOMemoryPhysicallyContiguous | kIOMapWriteCombineCache, size, LOW_MASK);
++	b->md = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task,
++	    kIODirectionInOut | kIOMemoryPhysicallyContiguous | kIOMapWriteCombineCache, size, PAGE_SIZE);
 +	if (b->md == NULL) {
 +		return false;
 +	}
