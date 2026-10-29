@@ -2,7 +2,7 @@ diff --git a/iokit/Kernel/arm/PolarisAdreno.cpp b/iokit/Kernel/arm/PolarisAdreno
 new file mode 100644
 --- /dev/null
 +++ b/iokit/Kernel/arm/PolarisAdreno.cpp
-@@ -0,0 +1,1819 @@
+@@ -0,0 +1,2094 @@
 +/*
 + * polaris: the Adreno 630 of the Xiaomi Mi MIX 2S (SDM845 v2, A630v2) for
 + * programs to draw with, behind the hardware interface (redwood_gpu_*) that
@@ -313,6 +313,16 @@ new file mode 100644
 +static volatile uint8_t *gcc, *gpucc, *gpu, *smmu, *gmu, *pdc;
 +static bool ready, gmu_up, core_up;
 +static uint32_t wptr, seqno, core_mhz = 257, gpu_stage = 1;
++static bool gpu_dump = true;
++
++/* SMMU layout, read from IDR1 exactly as the HackiOS loader does. */
++static uint32_t smmu_page = 0x1000, smmu_pages = 8;
++static uint32_t smmu_contexts = 8, smmu_matches = 16;
++static unsigned smmu_probe_match = 1, smmu_probe_mask = 0x400;
++static bool smmu_probe_exid = true, smmu_probe_clientpd = true;
++static unsigned smmu_orig_match = 1;
++static uint32_t smmu_orig_mask = 0x400;
++static bool smmu_orig_valid;
 +static IOLock *hw_lock;
 +
 +struct kbuf {
@@ -700,10 +710,175 @@ new file mode 100644
 +	return l3[i3]->va;
 +}
 +
++/* A context bank starts one SMMU page after the previous one; the number of
++ * pages before the first context comes from IDR1, as in HackiOS' smmu_layout. */
++static uint32_t
++smmu_cb(unsigned n)
++{
++	return smmu_pages * smmu_page + n * smmu_page;
++}
++
++static uint32_t
++smmu_cbar(unsigned n)
++{
++	return smmu_page + 4 * n;
++}
++
++static uint32_t
++smmu_cba2r(unsigned n)
++{
++	return smmu_page + 0x800 + 4 * n;
++}
++
++static void
++smmu_read_layout(void)
++{
++	uint32_t idr0 = rd(smmu, 0x20), idr1 = rd(smmu, 0x24);
++
++	smmu_page = (idr1 & (1u << 31)) ? 0x10000 : 0x1000;
++	smmu_pages = 2u << ((idr1 >> 28) & 7);
++	smmu_contexts = idr1 & 0xff;
++	smmu_matches = idr0 & 0xff;
++	if (smmu_contexts == 0 || smmu_contexts > 128) {
++		smmu_contexts = 8;
++	}
++	if (smmu_matches == 0 || smmu_matches > 128) {
++		smmu_matches = 16;
++	}
++	IOLog("POLARIS GPU: SMMU layout page=%x pages=%u contexts=%u matches=%u cb0=%x cb1=%x idr0=%08x idr1=%08x idr2=%08x idr7=%08x\n",
++	    smmu_page, smmu_pages, smmu_contexts, smmu_matches, smmu_cb(0), smmu_cb(1),
++	    idr0, idr1, rd(smmu, 0x28), rd(smmu, 0x3c));
++}
++
++static void
++smmu_dump(const char *tag)
++{
++	if (!gpu_dump) {
++		return;
++	}
++	smmu_read_layout();
++	IOLog("POLARIS GPU: SMMU[%s] scr0=%08x sgfsr=%08x\n", tag, rd(smmu, 0x0), rd(smmu, 0x48));
++	for (unsigned i = 0; i < smmu_matches; i++) {
++		IOLog("POLARIS GPU: SMMU[%s] SMR[%u]=%08x S2CR[%u]=%08x\n",
++		    tag, i, rd(smmu, SMMU_SMR(i)), i, rd(smmu, SMMU_S2CR(i)));
++	}
++	for (unsigned i = 0; i < smmu_contexts && i < 8; i++) {
++		IOLog("POLARIS GPU: SMMU[%s] CBAR[%u]=%08x CBA2R[%u]=%08x\n",
++		    tag, i, rd(smmu, smmu_cbar(i)), i, rd(smmu, smmu_cba2r(i)));
++	}
++	for (unsigned i = 0; i < smmu_contexts && i < 8; i++) {
++		uint32_t cb = smmu_cb(i);
++		IOLog("POLARIS GPU: SMMU[%s] CB%u base=%05x sctlr=%08x ttbr0=%08x%08x tcr=%08x tcr2=%08x mair0=%08x fsr=%08x far=%08x%08x fsynr=%08x\n",
++		    tag, i, cb, rd(smmu, cb + SMMU_CB_SCTLR),
++		    rd(smmu, cb + SMMU_CB_TTBR0 + 4), rd(smmu, cb + SMMU_CB_TTBR0),
++		    rd(smmu, cb + SMMU_CB_TCR), rd(smmu, cb + SMMU_CB_TCR2),
++		    rd(smmu, cb + SMMU_CB_MAIR0), rd(smmu, cb + SMMU_CB_FSR),
++		    rd(smmu, cb + SMMU_CB_FAR + 4), rd(smmu, cb + SMMU_CB_FAR),
++		    rd(smmu, cb + SMMU_CB_FSYNR0));
++	}
++}
++
++/* Write every SMR/S2CR candidate and report which ones the hardware keeps.
++ * This is the one experiment that tells us whether the global stream table is
++ * writable, and under which sCR0 state. */
++static void
++smr_probe(void)
++{
++	static uint32_t save_smr[128], save_s2cr[128];
++	uint32_t scr0 = rd(smmu, 0x0);
++	unsigned n = smmu_matches;
++
++	for (unsigned i = 0; i < n; i++) {
++		save_smr[i] = rd(smmu, SMMU_SMR(i));
++		save_s2cr[i] = rd(smmu, SMMU_S2CR(i));
++	}
++	/* The bootloader's SMR table is often write-protected (qcom,skip-init).
++	 * Find the entry that already matches the GMU's stream 5; we only need
++	 * to repoint its S2CR at context 1. */
++	smmu_orig_valid = false;
++	for (unsigned i = 0; i < n; i++) {
++		uint32_t smr = save_smr[i];
++		if ((smr & (1u << 31)) == 0) {
++			continue;
++		}
++		uint32_t id = smr & 0x7fff, mask = (smr >> 16) & 0x7fff;
++		if ((5 & ~mask) == (id & ~mask)) {
++			if (gpu_dump) {
++				IOLog("POLARIS GPU: SMR original[%u]=%08x S2CR=%08x matches stream 5 mask=%03x\n",
++				    i, smr, save_s2cr[i], mask);
++			}
++			if (!smmu_orig_valid) {
++				smmu_orig_match = i;
++				smmu_orig_mask = mask;
++				smmu_orig_valid = true;
++			}
++		}
++	}
++	if (!smmu_orig_valid && gpu_dump) {
++		IOLog("POLARIS GPU: no bootloader SMR entry matches stream 5\n");
++	}
++	if (gpu_dump) {
++		for (unsigned exid = 0; exid < 2; exid++) {
++			for (int cp = 1; cp >= 0; cp--) {
++				uint32_t s = (scr0 & ~((1u << 0) | (1u << 3))) |
++				    (exid ? (1u << 3) : 0) | (cp ? 1u : 0);
++				unsigned ok = 0, first = 0, firstmask = 0;
++
++				wr(smmu, 0x0, s);
++				for (unsigned m = 0; m < n; m++) {
++					for (unsigned mi = 0; mi < 2; mi++) {
++						uint32_t mask = mi ? 0x400 : 0;
++						uint32_t smr, s2cr;
++						wr(smmu, SMMU_S2CR(m), 1);
++						wr(smmu, SMMU_SMR(m), (1u << 31) | (mask << 16) | 5);
++						smr = rd(smmu, SMMU_SMR(m));
++						s2cr = rd(smmu, SMMU_S2CR(m));
++						if ((smr & 0x7fff) == 5 && (s2cr & 0xff) == 1) {
++							if (ok == 0) {
++								first = m;
++								firstmask = mask;
++							}
++							ok++;
++						}
++					}
++				}
++				IOLog("POLARIS GPU: SMR probe exid=%u clientpd=%u ok=%u first_match=%u mask=%03x\n",
++				    exid, (unsigned)cp, ok, first, firstmask);
++				if (ok != 0 && first >= 1) {
++					smmu_probe_match = first;
++					smmu_probe_mask = firstmask;
++					smmu_probe_exid = exid != 0;
++					smmu_probe_clientpd = cp != 0;
++				}
++				if (cp == 0) {
++					break;
++				}
++			}
++		}
++	}
++	if (smmu_orig_valid) {
++		smmu_probe_match = smmu_orig_match;
++		smmu_probe_mask = smmu_orig_mask;
++		if (gpu_dump) {
++			IOLog("POLARIS GPU: using bootloader SMR match=%u mask=%03x\n",
++			    smmu_probe_match, smmu_probe_mask);
++		}
++	}
++	wr(smmu, 0x0, scr0);
++	for (unsigned i = 0; i < n; i++) {
++		wr(smmu, SMMU_SMR(i), save_smr[i]);
++		wr(smmu, SMMU_S2CR(i), save_s2cr[i]);
++	}
++	if (gpu_dump) {
++		IOLog("POLARIS GPU: SMR chosen match=%u mask=%03x exid=%u clientpd=%u\n",
++		    smmu_probe_match, smmu_probe_mask, smmu_probe_exid, smmu_probe_clientpd);
++	}
++}
++
 +static void
 +tlb_flush_ctx(unsigned ctx)
 +{
-+	uint32_t cb = SMMU_CB(ctx);
++	uint32_t cb = smmu_cb(ctx);
 +
 +	__asm__ volatile ("dsb sy" ::: "memory");
 +	wr(smmu, cb + SMMU_CB_TLBIALL, 0);
@@ -734,10 +909,10 @@ new file mode 100644
 +smmu_fault(const char *tag)
 +{
 +	IOLog("POLARIS GPU: [%s] SMMU gfsr %08x CB0 FSR %08x FAR %08x%08x CB1 FSR %08x FAR %08x%08x\n",
-+	    tag, rd(smmu, 0x48), rd(smmu, SMMU_CB(0) + SMMU_CB_FSR),
-+	    rd(smmu, SMMU_CB(0) + SMMU_CB_FAR + 4), rd(smmu, SMMU_CB(0) + SMMU_CB_FAR),
-+	    rd(smmu, SMMU_CB(1) + SMMU_CB_FSR),
-+	    rd(smmu, SMMU_CB(1) + SMMU_CB_FAR + 4), rd(smmu, SMMU_CB(1) + SMMU_CB_FAR));
++	    tag, rd(smmu, 0x48), rd(smmu, smmu_cb(0) + SMMU_CB_FSR),
++	    rd(smmu, smmu_cb(0) + SMMU_CB_FAR + 4), rd(smmu, smmu_cb(0) + SMMU_CB_FAR),
++	    rd(smmu, smmu_cb(1) + SMMU_CB_FSR),
++	    rd(smmu, smmu_cb(1) + SMMU_CB_FAR + 4), rd(smmu, smmu_cb(1) + SMMU_CB_FAR));
 +}
 +
 +static bool
@@ -772,13 +947,13 @@ new file mode 100644
 +static bool
 +smmu_context_on(unsigned ctx, unsigned stream, unsigned match, unsigned mask, uint32_t sctlr)
 +{
-+	uint32_t cb = SMMU_CB(ctx);
++	uint32_t cb = smmu_cb(ctx);
 +	uint64_t root = l1.pa | ((uint64_t)ctx << 48);
 +
 +	wr(smmu, cb + SMMU_CB_SCTLR, 0);
 +	wr(smmu, cb + SMMU_CB_FSR, 0xc00001fe);
-+	wr(smmu, SMMU_CBA2R(ctx), 1);
-+	wr(smmu, SMMU_CBAR(ctx), 0x0001f300);
++	wr(smmu, smmu_cba2r(ctx), 1);
++	wr(smmu, smmu_cbar(ctx), 0x0001f300);
 +	wr(smmu, cb + SMMU_CB_TTBR0, (uint32_t)root);
 +	wr(smmu, cb + SMMU_CB_TTBR0 + 4, (uint32_t)(root >> 32));
 +	wr(smmu, cb + SMMU_CB_TCR2, 0x00038011);
@@ -813,31 +988,45 @@ new file mode 100644
 +smmu_setup(void)
 +{
 +	uint32_t scr0 = rd(smmu, 0x0);
-+	uint32_t idr0 = rd(smmu, 0x20);
++	uint32_t idr0;
++
++	smmu_read_layout();
++	idr0 = rd(smmu, 0x20);
++	if (gpu_dump) {
++		smmu_dump("before");
++	}
++	smr_probe();
 +
 +	smmu_tables_sync();
 +
-+	/* Program the SMR/S2CR table with the client port disabled.  The
-+	 * bootloader leaves some entries valid, and SMR writes made while
-+	 * clients are enabled are ignored on this SMMU. */
++	/* Program the SMR/S2CR table with the client port in the state the
++	 * probe found writable.  The bootloader leaves some entries valid, and
++	 * this SMMU ignores SMR writes made while clients are enabled. */
 +	scr0 &= ~((1u << 0) | (1u << 10) | (1u << 13) | (3u << 14));
 +	scr0 |= (1u << 1) | (1u << 2) | (1u << 4) | (1u << 5) |
 +	    (1u << 11) | (1u << 12);
-+	if (idr0 & (1u << 8)) {
++	if (smmu_probe_exid || (idr0 & (1u << 8))) {
 +		scr0 |= (1u << 3);                              /* EXIDENABLE: 16-bit stream IDs */
 +	}
-+	wr(smmu, 0x0, scr0 | 1u);                               /* CLIENTPD = 1 */
++	wr(smmu, 0x0, scr0 | (smmu_probe_clientpd ? 1u : 0u));
 +	for (unsigned i = 0; i < 128; i++) {
 +		wr(smmu, SMMU_S2CR(i), 1u << 16);               /* bypass */
-+		wr(smmu, SMMU_SMR(i), 0);
++	}
++	if (!smmu_orig_valid) {
++		for (unsigned i = 0; i < 128; i++) {
++			wr(smmu, SMMU_SMR(i), 0);
++		}
 +	}
 +	if (!smmu_context_on(0, 0, 0, 1, 0x67) ||
-+	    !smmu_context_on(1, 5, 1, 0x400, 0x1027)) {
++	    !smmu_context_on(1, 5, smmu_probe_match, smmu_probe_mask, 0x1027)) {
 +		return false;
 +	}
 +	wr(smmu, 0x0, scr0 & ~1u);                              /* CLIENTPD = 0 */
 +	IOLog("POLARIS GPU: SMMU sCR0 %08x IDR0 %08x IDR1 %08x IDR2 %08x\n",
 +	    rd(smmu, 0x0), idr0, rd(smmu, 0x24), rd(smmu, 0x28));
++	if (gpu_dump) {
++		smmu_dump("after");
++	}
 +	return true;
 +}
 +
@@ -1306,6 +1495,72 @@ new file mode 100644
 +	return true;
 +}
 +
++static void
++dump_gpucc(const char *tag)
++{
++	if (!gpu_dump) {
++		return;
++	}
++	IOLog("POLARIS GPU: GCC[%s] pll_vote=%08x gpu_ahb=%08x memnoc=%08x snoc=%08x ddr_axi=%08x\n",
++	    tag, rd(gcc, GCC_PLL_VOTE), rd(gcc, GCC_GPU_CFG_AHB_CBCR),
++	    rd(gcc, GCC_GPU_MEMNOC_GFX_CBCR), rd(gcc, GCC_GPU_SNOC_DVM_GFX_CBCR),
++	    rd(gcc, GCC_DDRSS_GPU_AXI_CBCR));
++	IOLog("POLARIS GPU: GPUCC[%s] cx_gdscr=%08x cx_hw=%08x gx_gdscr=%08x gx_sw=%08x gmu_rcgr=%08x gmu_src=%08x cx_gmu=%08x gx_gmu=%08x cx_apb=%08x smmu_vote=%08x\n",
++	    tag, rd(gpucc, GPUCC_CX_GDSCR), rd(gpucc, GPUCC_CX_HW_CTRL),
++	    rd(gpucc, GPUCC_GX_GDSCR), rd(gpucc, GPUCC_GX_SW_RESET),
++	    rd(gpucc, GPUCC_GMU_RCGR), rd(gpucc, GPUCC_GMU_RCGR + 4),
++	    rd(gpucc, GPUCC_CX_GMU_CBCR), rd(gpucc, GPUCC_GX_GMU_CBCR),
++	    rd(gpucc, GPUCC_CX_APB_CBCR), rd(gpucc, 0x5000));
++}
++
++static void
++dump_gmu(const char *tag)
++{
++	if (!gpu_dump) {
++		return;
++	}
++	IOLog("POLARIS GPU: GMU[%s] sysreset=%08x boot=%08x fw_init=%08x cfg=%08x hfi_ctrl=%08x hfi_ver=%08x general7=%08x rpmh=%08x sptprac=%08x ahb=%08x\n",
++	    tag, rd(gmu, GMU_CM3_SYSRESET), rd(gmu, GMU_CM3_BOOT_CONFIG),
++	    rd(gmu, GMU_CM3_FW_INIT_RESULT), rd(gmu, GMU_CM3_CFG),
++	    rd(gmu, GMU_HFI_CTRL_STATUS), rd(gmu, GMU_HFI_VERSION_INFO),
++	    rd(gmu, GMU_GENERAL_7), rd(gmu, GMU_RPMH_POWER_STATE),
++	    rd(gmu, GMU_SPTPRAC_PWR_CLK_STATUS), rd(gmu, GMU_AHB_FENCE_STATUS));
++	IOLog("POLARIS GPU: GMU[%s] qtbl=%08x/%08x sfr=%08x ao_int=%08x ao_busy=%08x rscc_ack=%08x counter=%08x%08x\n",
++	    tag, rd(gmu, GMU_HFI_QTBL_ADDR), rd(gmu, GMU_HFI_QTBL_INFO),
++	    rd(gmu, GMU_HFI_SFR_ADDR), rd(gmu, GMU_AO_HOST_INTERRUPT_STATUS),
++	    rd(gmu, GMU_AO_GPU_CX_BUSY_STATUS), rd(gmu, GMU_RSCC_CONTROL_ACK),
++	    rd(gmu, GMU_ALWAYS_ON_COUNTER_H), rd(gmu, GMU_ALWAYS_ON_COUNTER_L));
++}
++
++static void
++dump_gpu(const char *tag)
++{
++	if (!gpu_dump) {
++		return;
++	}
++	IOLog("POLARIS GPU: GPU[%s] rbbm_id=%08x rbbm_status=%08x cp_rb_base=%08x%08x cp_rb_cntl=%08x cp_rptr=%08x cp_wptr=%08x cp_me=%08x cp_sqe=%08x%08x cp_fault=%08x cp_int=%08x\n",
++	    tag, gpu_rd(0x0), gpu_rd(0x210), gpu_rd(0x801), gpu_rd(0x800),
++	    gpu_rd(0x802), gpu_rd(0x806), gpu_rd(0x807), gpu_rd(0x808),
++	    gpu_rd(0x831), gpu_rd(0x830), gpu_rd(0x821), gpu_rd(0x92a));
++}
++
++static void
++dump_hfi(const char *tag)
++{
++	if (!gpu_dump) {
++		return;
++	}
++	IOLog("POLARIS GPU: HFI[%s] va=%p pa=%08llx iova=%08llx size=%llx hfi=%p\n",
++	    tag, hfi_mem.va, hfi_mem.pa, hfi_mem.iova, hfi_mem.size, (void *)hfi);
++	if (hfi != NULL) {
++		for (unsigned i = 0; i < 2; i++) {
++			IOLog("POLARIS GPU: HFI[%s] q%u read=%u write=%u size=%u\n",
++			    tag, i, hfi->qhdr[i].read_index, hfi->qhdr[i].write_index,
++			    hfi->qhdr[i].queue_size);
++		}
++	}
++}
++
 +static bool
 +gmu_bringup(void)
 +{
@@ -1314,22 +1569,33 @@ new file mode 100644
 +		IOLog("POLARIS GPU: GMU shared memory allocation failed\n");
 +		return false;
 +	}
++	dump_hfi("alloc");
 +	hfi = (volatile struct hfi_queue_table *)hfi_mem.va;
 +	hfi_init();
++	dump_hfi("init");
 +	if (!power_up()) {
 +		return false;
 +	}
++	dump_gpucc("power");
++	dump_gmu("power");
++	dump_gpu("power");
 +	if (!smmu_setup()) {
 +		return false;
 +	}
++	dump_gmu("smmu");
 +	if (!gmu_load_fw()) {
 +		return false;
 +	}
++	dump_gmu("fw");
++	dump_gpu("fw");
 +	rsc_pdc_program();
 +	rsc_wake();
++	dump_gmu("rsc");
 +	if (!gmu_start()) {
 +		return false;
 +	}
++	dump_gmu("start");
++	dump_hfi("start");
 +	arc_init();
 +	if (!gmu_core_power()) {
 +		IOLog("POLARIS GPU: core power incomplete; continuing to HFI\n");
@@ -1337,7 +1603,10 @@ new file mode 100644
 +	if (!gmu_hfi_start()) {
 +		return false;
 +	}
++	dump_gmu("hfi");
++	dump_hfi("hfi");
 +	(void)gmu_hfi_messages();
++	dump_gmu("done");
 +	IOLog("POLARIS GPU: STAGE 1: gmu %s core %s; fw %08x hfi %08x sp %08x rpmh %08x fence %08x aon %08x%08x\n",
 +	    gmu_up ? "up" : "?", core_up ? "on" : "off", rd(gmu, GMU_CM3_FW_INIT_RESULT),
 +	    rd(gmu, GMU_HFI_CTRL_STATUS), rd(gmu, GMU_SPTPRAC_PWR_CLK_STATUS),
@@ -1597,6 +1866,9 @@ new file mode 100644
 +		IOLog("POLARIS GPU: MMIO map failed\n");
 +		return false;
 +	}
++	IOLog("POLARIS GPU: MMIO GCC=%llx+%x GPUCC=%llx+%x GPU=%llx+%x SMMU=%llx+%x GMU=%llx+%x PDC=%llx+%x\n",
++	    GCC_BASE, GCC_SIZE, GPUCC_BASE, GPUCC_SIZE, GPU_BASE, GPU_SIZE,
++	    SMMU_BASE, SMMU_SIZE, GMU_BASE, GMU_SIZE, PDC_BASE, PDC_SIZE);
 +	va_free_count = 0;
 +	redwood_gpu_address_free(VA_USER_START, VA_KERNEL - VA_USER_START);
 +	if (!smmu_tables_init()) {
@@ -1802,7 +2074,7 @@ new file mode 100644
 +void
 +polaris_adreno_init(void)
 +{
-+	uint32_t on = 0, stage = 0, mhz = 0;
++	uint32_t on = 0, stage = 0, mhz = 0, dump = 1;
 +	thread_t thread;
 +
 +	if (!PE_parse_boot_argn("gpu", &on, sizeof(on)) || on == 0 || hw_lock != NULL) {
@@ -1813,6 +2085,9 @@ new file mode 100644
 +	}
 +	if (PE_parse_boot_argn("gpu_mhz", &mhz, sizeof(mhz)) && mhz >= 200 && mhz <= 710) {
 +		core_mhz = mhz;
++	}
++	if (PE_parse_boot_argn("polarisgpu_dump", &dump, sizeof(dump))) {
++		gpu_dump = dump != 0;
 +	}
 +	hw_lock = IOLockAlloc();
 +	if (hw_lock == NULL) {
