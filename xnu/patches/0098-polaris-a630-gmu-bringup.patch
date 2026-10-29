@@ -2,7 +2,7 @@ diff --git a/iokit/Kernel/arm/PolarisAdreno.cpp b/iokit/Kernel/arm/PolarisAdreno
 new file mode 100644
 --- /dev/null
 +++ b/iokit/Kernel/arm/PolarisAdreno.cpp
-@@ -0,0 +1,2094 @@
+@@ -0,0 +1,2101 @@
 +/*
 + * polaris: the Adreno 630 of the Xiaomi Mi MIX 2S (SDM845 v2, A630v2) for
 + * programs to draw with, behind the hardware interface (redwood_gpu_*) that
@@ -966,9 +966,12 @@ new file mode 100644
 +		IOLog("POLARIS GPU: SMMU CB%u TLB sync stuck (%08x)\n", ctx, rd(smmu, cb + SMMU_CB_TLBSTATUS));
 +		return false;
 +	}
-+	wr(smmu, cb + SMMU_CB_SCTLR, sctlr);
++	/* The stream table must be written while this context is still off:
++	 * once SCTLR.M is set, this SMMU ignores further SMR writes. */
 +	wr(smmu, SMMU_S2CR(match), ctx);
 +	wr(smmu, SMMU_SMR(match), (1u << 31) | (mask << 16) | stream);
++	__asm__ volatile ("dsb sy" ::: "memory");
++	wr(smmu, cb + SMMU_CB_SCTLR, sctlr);
 +	__asm__ volatile ("dsb sy" ::: "memory");
 +
 +	if ((rd(smmu, cb + SMMU_CB_SCTLR) & 1) == 0 ||
@@ -996,6 +999,10 @@ new file mode 100644
 +		smmu_dump("before");
 +	}
 +	smr_probe();
++	if ((idr0 & (1u << 8)) == 0) {
++		/* This SMMU has 8-bit stream IDs; the 0x400 mask is out of range. */
++		smmu_probe_mask = 0;
++	}
 +
 +	smmu_tables_sync();
 +
@@ -1009,11 +1016,11 @@ new file mode 100644
 +		scr0 |= (1u << 3);                              /* EXIDENABLE: 16-bit stream IDs */
 +	}
 +	wr(smmu, 0x0, scr0 | (smmu_probe_clientpd ? 1u : 0u));
-+	for (unsigned i = 0; i < 128; i++) {
++	for (unsigned i = 0; i < smmu_matches; i++) {
 +		wr(smmu, SMMU_S2CR(i), 1u << 16);               /* bypass */
 +	}
 +	if (!smmu_orig_valid) {
-+		for (unsigned i = 0; i < 128; i++) {
++		for (unsigned i = 0; i < smmu_matches; i++) {
 +			wr(smmu, SMMU_SMR(i), 0);
 +		}
 +	}
