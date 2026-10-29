@@ -2,7 +2,7 @@ diff --git a/iokit/Kernel/arm/PolarisAdreno.cpp b/iokit/Kernel/arm/PolarisAdreno
 new file mode 100644
 --- /dev/null
 +++ b/iokit/Kernel/arm/PolarisAdreno.cpp
-@@ -0,0 +1,1729 @@
+@@ -0,0 +1,1748 @@
 +/*
 + * polaris: the Adreno 630 of the Xiaomi Mi MIX 2S (SDM845 v2, A630v2) for
 + * programs to draw with, behind the hardware interface (redwood_gpu_*) that
@@ -441,6 +441,7 @@ new file mode 100644
 +		return false;
 +	}
 +	rmw(gcc, GCC_PLL_VOTE, 0, (1u << 15) | (1u << 16));      /* GPLL0 and its /2 tap */
++	IODelay(500);
 +	branch_on(gcc, GCC_GPU_MEMNOC_GFX_CBCR, "gcc_gpu_memnoc_gfx", false);
 +	branch_on(gcc, GCC_GPU_SNOC_DVM_GFX_CBCR, "gcc_gpu_snoc_dvm_gfx", true);
 +	branch_on(gcc, GCC_DDRSS_GPU_AXI_CBCR, "gcc_ddrss_gpu_axi", false);
@@ -1034,6 +1035,23 @@ new file mode 100644
 +	__asm__ volatile ("dsb sy" ::: "memory");
 +}
 +
++static void
++rsc_wake(void)
++{
++	/* The GMU's RPMh channel is a sequencer in the always-on block; ask it
++	 * to run before the firmware starts casting votes. */
++	wr(gmu, GMU_RSCC_CONTROL_REQ, 2);
++	if (!poll(gmu, GMU_RSCC_CONTROL_ACK, 2, 2, 100000)) {
++		IOLog("POLARIS GPU: RSC wake not acknowledged (req %08x ack %08x busy %08x)\n",
++		    rd(gmu, GMU_RSCC_CONTROL_REQ), rd(gmu, GMU_RSCC_CONTROL_ACK),
++		    rd(gmu, GMU_RSCC_SEQ_BUSY_DRV0));
++	}
++	if (!poll(gmu, GMU_RSCC_SEQ_BUSY_DRV0, 0xffffffff, 0, 100000)) {
++		IOLog("POLARIS GPU: RSC sequencer stays busy (%08x)\n", rd(gmu, GMU_RSCC_SEQ_BUSY_DRV0));
++	}
++	wr(gmu, GMU_RSCC_CONTROL_REQ, 0);
++}
++
 +/* ---------------------------------------------------------------- GMU */
 +
 +static bool
@@ -1255,6 +1273,7 @@ new file mode 100644
 +		return false;
 +	}
 +	rsc_pdc_program();
++	rsc_wake();
 +	if (!gmu_start()) {
 +		return false;
 +	}
