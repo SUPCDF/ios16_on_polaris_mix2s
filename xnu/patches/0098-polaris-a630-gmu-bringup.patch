@@ -2,7 +2,7 @@ diff --git a/iokit/Kernel/arm/PolarisAdreno.cpp b/iokit/Kernel/arm/PolarisAdreno
 new file mode 100644
 --- /dev/null
 +++ b/iokit/Kernel/arm/PolarisAdreno.cpp
-@@ -0,0 +1,1751 @@
+@@ -0,0 +1,1750 @@
 +/*
 + * polaris: the Adreno 630 of the Xiaomi Mi MIX 2S (SDM845 v2, A630v2) for
 + * programs to draw with, behind the hardware interface (redwood_gpu_*) that
@@ -35,7 +35,6 @@ new file mode 100644
 +
 +extern "C" {
 +vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
-+void sweet_dcache_clean(vm_offset_t addr, unsigned length);
 +int polaris_fw_read(const char *path, void **data, size_t *size);
 +void polaris_fw_free(void *data, size_t size);
 +int polaris_root_mounted(void);
@@ -1617,7 +1616,7 @@ new file mode 100644
 +redwood_gpu_to_memory(void *start, uint64_t size)
 +{
 +	if (start != NULL && size != 0) {
-+		sweet_dcache_clean((vm_offset_t)start, (unsigned)size);
++		dcache_sync(start, size);
 +	}
 +	__asm__ volatile ("dsb sy" ::: "memory");
 +}
