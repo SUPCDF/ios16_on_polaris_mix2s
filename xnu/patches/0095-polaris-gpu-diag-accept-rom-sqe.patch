@@ -1,0 +1,20 @@
+diff --git a/bsd/dev/polaris_gpu_diag.c b/bsd/dev/polaris_gpu_diag.c
+--- a/bsd/dev/polaris_gpu_diag.c
++++ b/bsd/dev/polaris_gpu_diag.c
+@@ -21,8 +21,8 @@
+ static const struct {
+ 	const char *name;
+ 	uint32_t size;
+ } gpu_blobs[GPU_BLOB_COUNT] = {
+-	{ "GPU-SQE", 32136 }, { "GPU-GMU", 32768 },
++	{ "GPU-SQE", 0 }, { "GPU-GMU", 32768 },
+ 	{ "GPU-ZAP-MDT", 6684 }, { "GPU-ZAP-B00", 148 },
+ 	{ "GPU-ZAP-B01", 6536 }, { "GPU-ZAP-B02", 1968 },
+ };
+@@ -104,5 +104,5 @@
+ 		reserve = (size + GPU_PAGE - 1u) & ~(GPU_PAGE - 1u);
+-		if (size != gpu_blobs[i].size || !reserve ||
++		if ((gpu_blobs[i].size && size != gpu_blobs[i].size) || !reserve ||
+ 		    (addr & (GPU_PAGE - 1u)) ||
+ 		    addr < dram || addr > dram + dram_size ||
+ 		    reserve > dram + dram_size - addr ||
