@@ -2,7 +2,7 @@ diff --git a/iokit/Kernel/arm/PolarisAdreno.cpp b/iokit/Kernel/arm/PolarisAdreno
 new file mode 100644
 --- /dev/null
 +++ b/iokit/Kernel/arm/PolarisAdreno.cpp
-@@ -0,0 +1,2163 @@
+@@ -0,0 +1,2169 @@
 +/*
 + * polaris: the Adreno 630 of the Xiaomi Mi MIX 2S (SDM845 v2, A630v2) for
 + * programs to draw with, behind the hardware interface (redwood_gpu_*) that
@@ -1392,18 +1392,24 @@ new file mode 100644
 +static bool
 +gmu_core_power(void)
 +{
-+	bool ok;
++	bool ok, boot_ok;
 +	uint32_t vote = arc_vote(65, &gfx_levels, &mx_levels, &ok);   /* LOW_SVS, 257 MHz */
++	uint32_t boot_vote = arc_vote(417, &gfx_levels, &mx_levels, &boot_ok); /* highest for rail-on */
 +	uint32_t gx_idx = vote & 0xff, mx_idx = (vote >> 8) & 0xff;
++	uint32_t boot_gx = boot_vote & 0xff, boot_mx = (boot_vote >> 8) & 0xff;
 +
 +	if (!ok) {
 +		IOLog("POLARIS GPU: no ARC vote for LOW_SVS; using index 0\n");
 +		gx_idx = mx_idx = 0;
 +	}
++	if (!boot_ok) {
++		IOLog("POLARIS GPU: no ARC vote for rail-on; using index 0\n");
++		boot_gx = boot_mx = 0;
++	}
 +	/* a6xx_gmu_gfx_rail_on: legacy BOOT_SLUMBER OOB, set 22 / ack 30. */
 +	wr(gmu, GMU_BOOT_SLUMBER_OPTION, 0);
-+	wr(gmu, GMU_GX_VOTE_IDX, gx_idx);
-+	wr(gmu, GMU_MX_VOTE_IDX, mx_idx);
++	wr(gmu, GMU_GX_VOTE_IDX, boot_gx);
++	wr(gmu, GMU_MX_VOTE_IDX, boot_mx);
 +	wr(gmu, GMU_HOST2GMU_INTR_SET, 1u << 22);
 +	if (!poll(gmu, GMU_GMU2HOST_INTR_INFO, 1u << 30, 1u << 30, 100000)) {
 +		IOLog("POLARIS GPU: no BOOT_SLUMBER_ACK (intr %08x)\n", rd(gmu, GMU_GMU2HOST_INTR_INFO));
