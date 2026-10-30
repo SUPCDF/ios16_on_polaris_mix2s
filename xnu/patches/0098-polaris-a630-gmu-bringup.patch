@@ -2,7 +2,7 @@ diff --git a/iokit/Kernel/arm/PolarisAdreno.cpp b/iokit/Kernel/arm/PolarisAdreno
 new file mode 100644
 --- /dev/null
 +++ b/iokit/Kernel/arm/PolarisAdreno.cpp
-@@ -0,0 +1,2127 @@
+@@ -0,0 +1,2137 @@
 +/*
 + * polaris: the Adreno 630 of the Xiaomi Mi MIX 2S (SDM845 v2, A630v2) for
 + * programs to draw with, behind the hardware interface (redwood_gpu_*) that
@@ -1050,8 +1050,10 @@ new file mode 100644
 +static bool
 +kbuf_map(struct kbuf *b, bool core)
 +{
-+	b->iova = kernel_va_next;
-+	kernel_va_next += b->size + 4096;
++	if (b->iova == 0) {
++		b->iova = kernel_va_next;
++		kernel_va_next += b->size + 4096;
++	}
 +	for (uint64_t off = 0; off < b->size; off += 4096) {
 +		if (!mmu_map(b->iova + off, b->pa + off, false, core)) {
 +			return false;
@@ -1112,7 +1114,7 @@ new file mode 100644
 +static void
 +hfi_init(void)
 +{
-+	struct hfi_queue_table *t = (struct hfi_queue_table *)hfi_mem.va;
++	struct hfi_queue_table *t = (struct hfi_queue_table *)(hfi_mem.va + (hfi_mem.iova & 0xfff));
 +	static const uint32_t ids[HFI_QUEUES] = { 0, 4, 5 };
 +	static const uint32_t prio[HFI_QUEUES] = { 10, 10, 40 };
 +
@@ -1145,7 +1147,7 @@ new file mode 100644
 +hfi_receive(unsigned which, uint32_t id, uint32_t number, uint32_t *verdict)
 +{
 +	volatile struct hfi_queue_header *q = &hfi->qhdr[which];
-+	volatile uint32_t *data = (volatile uint32_t *)(hfi_mem.va + HFI_QUEUE_OFFSET(which));
++	volatile uint32_t *data = (volatile uint32_t *)(hfi_mem.va + (hfi_mem.iova & 0xfff) + HFI_QUEUE_OFFSET(which));
 +	bool answered = false;
 +
 +	while (q->read_index != q->write_index) {
@@ -1192,7 +1194,7 @@ new file mode 100644
 +{
 +	struct hfi_msg_hdr *h = (struct hfi_msg_hdr *)message;
 +	volatile struct hfi_queue_header *q = &hfi->qhdr[0];
-+	volatile uint32_t *data = (volatile uint32_t *)(hfi_mem.va + HFI_QUEUE_OFFSET(0));
++	volatile uint32_t *data = (volatile uint32_t *)(hfi_mem.va + (hfi_mem.iova & 0xfff) + HFI_QUEUE_OFFSET(0));
 +	uint32_t number = ++hfi_seq & 0xfff;
 +	uint32_t at = q->write_index % HFI_QUEUE_WORDS;
 +	bool answered = false;
@@ -1591,13 +1593,21 @@ new file mode 100644
 +static bool
 +gmu_bringup(void)
 +{
-+	if (!kbuf_alloc(&hfi_mem, 0x4000) || !kbuf_map(&hfi_mem, false) ||
++	if (!kbuf_alloc(&hfi_mem, 0x4000)) {
++		IOLog("POLARIS GPU: GMU HFI allocation failed\n");
++		return false;
++	}
++	/* The A630 bootloader leaves the GMU's HFI table at this fixed IOVA;
++	 * the GMU firmware ignores our GMU_HFI_QTBL_ADDR write and reads it
++	 * there.  Map our table at that address. */
++	hfi_mem.iova = 0x6AB6FBC4ull;
++	if (!kbuf_map(&hfi_mem, false) ||
 +	    !kbuf_alloc(&dump_mem, 0x4000) || !kbuf_map(&dump_mem, false)) {
 +		IOLog("POLARIS GPU: GMU shared memory allocation failed\n");
 +		return false;
 +	}
 +	dump_hfi("alloc");
-+	hfi = (volatile struct hfi_queue_table *)hfi_mem.va;
++	hfi = (volatile struct hfi_queue_table *)(hfi_mem.va + (hfi_mem.iova & 0xfff));
 +	hfi_init();
 +	dump_hfi("init");
 +	if (!power_up()) {
