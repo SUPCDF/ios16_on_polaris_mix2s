@@ -1361,7 +1361,7 @@ new file mode 100644
 +	wr(gmu, GMU_HFI_QTBL_ADDR, (uint32_t)hfi_mem.iova);
 +	wr(gmu, GMU_HFI_QTBL_INFO, 1);
 +	wr(gmu, GMU_AHB_FENCE_RANGE_0, FENCE_RANGE_MASK);
-+	wr(gmu, GMU_CM3_CFG, 1u << 9);                          /* vendor polaris value */
++	wr(gmu, GMU_CM3_CFG, 0x4052);                           /* normal boot value */
 +	wr(gmu, GMU_PWR_COL_CP_RESP, 0);
 +	wr(gmu, GMU_HFI_SFR_ADDR, (uint32_t)GPU_CHIP_FW);
 +	wr(gmu, GMU_PWR_COL_CP_MSG, (uint32_t)dump_mem.iova | (uint32_t)(dump_mem.size / 4096 - 1));
