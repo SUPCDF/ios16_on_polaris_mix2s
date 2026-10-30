@@ -2,7 +2,7 @@ diff --git a/iokit/Kernel/arm/PolarisAdreno.cpp b/iokit/Kernel/arm/PolarisAdreno
 new file mode 100644
 --- /dev/null
 +++ b/iokit/Kernel/arm/PolarisAdreno.cpp
-@@ -0,0 +1,2120 @@
+@@ -0,0 +1,2123 @@
 +/*
 + * polaris: the Adreno 630 of the Xiaomi Mi MIX 2S (SDM845 v2, A630v2) for
 + * programs to draw with, behind the hardware interface (redwood_gpu_*) that
@@ -1431,6 +1431,7 @@ new file mode 100644
 +		IOLog("POLARIS GPU: HFI queues did not start: ctrl %08x fw %08x intr %08x\n",
 +		    rd(gmu, GMU_HFI_CTRL_STATUS), rd(gmu, GMU_CM3_FW_INIT_RESULT),
 +		    rd(gmu, GMU_GMU2HOST_INTR_INFO));
++		smmu_fault("hfi-start");
 +		return false;
 +	}
 +	IOLog("POLARIS GPU: HFI queues up: status %08x version %08x\n",
@@ -1620,6 +1621,8 @@ new file mode 100644
 +	rsc_wake();
 +	dump_gmu("rsc");
 +	if (!gmu_hfi_start()) {
++		dump_gmu("hfi-fail");
++		dump_hfi("hfi-fail");
 +		return false;
 +	}
 +	dump_gmu("hfi");
