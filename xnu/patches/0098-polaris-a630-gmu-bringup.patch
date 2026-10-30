@@ -1396,7 +1396,7 @@ new file mode 100644
 +gmu_gfx_rail_on(void)
 +{
 +	bool ok;
-+	uint32_t vote = arc_vote(65, &gfx_levels, &mx_levels, &ok); /* vendor default 280 MHz */
++	uint32_t vote = arc_vote(129, &gfx_levels, &mx_levels, &ok); /* vendor perf_idx=1, 548 MHz */
 +	uint32_t gx = vote & 0xff, mx = (vote >> 8) & 0xff;
 +
 +	if (!ok) {
