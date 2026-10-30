@@ -1488,9 +1488,9 @@ new file mode 100644
 +		}
 +		perf.gx_votes[i].freq = freqs[i];
 +	}
-+	perf.cx_votes[0].freq = 0;
-+	perf.cx_votes[1].freq = 200000;
-+	perf.cx_votes[2].freq = 500000;
++	perf.cx_votes[0].freq = 200000;
++	perf.cx_votes[1].freq = 500000;
++	perf.cx_votes[2].freq = 710000;
 +	if (hfi_send(HFI_MSG_PERF_TBL, &perf, sizeof(perf) / 4, &verdict) && verdict == 0) {
 +		IOLog("POLARIS GPU: HFI perf table accepted\n");
 +	} else {
