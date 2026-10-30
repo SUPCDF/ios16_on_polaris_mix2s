@@ -2,7 +2,7 @@ diff --git a/iokit/Kernel/arm/PolarisAdreno.cpp b/iokit/Kernel/arm/PolarisAdreno
 new file mode 100644
 --- /dev/null
 +++ b/iokit/Kernel/arm/PolarisAdreno.cpp
-@@ -0,0 +1,2141 @@
+@@ -0,0 +1,2147 @@
 +/*
 + * polaris: the Adreno 630 of the Xiaomi Mi MIX 2S (SDM845 v2, A630v2) for
 + * programs to draw with, behind the hardware interface (redwood_gpu_*) that
@@ -1563,6 +1563,11 @@ new file mode 100644
 +	    rd(gmu, GMU_HFI_SFR_ADDR), rd(gmu, GMU_AO_HOST_INTERRUPT_STATUS),
 +	    rd(gmu, GMU_AO_GPU_CX_BUSY_STATUS), rd(gmu, GMU_RSCC_CONTROL_ACK),
 +	    rd(gmu, GMU_ALWAYS_ON_COUNTER_H), rd(gmu, GMU_ALWAYS_ON_COUNTER_L));
++	IOLog("POLARIS GPU: GMU[%s] core slumber=%08x gx=%08x mx=%08x sptprac_ctrl=%08x h2g=%08x g2h=%08x mask=%08x\n",
++	    tag, rd(gmu, GMU_BOOT_SLUMBER_OPTION), rd(gmu, GMU_GX_VOTE_IDX),
++	    rd(gmu, GMU_MX_VOTE_IDX), rd(gmu, GMU_GX_SPTPRAC_POWER_CONTROL),
++	    rd(gmu, GMU_HOST2GMU_INTR_SET), rd(gmu, GMU_GMU2HOST_INTR_INFO),
++	    rd(gmu, GMU_GMU2HOST_INTR_MASK));
 +}
 +
 +static void
@@ -1651,6 +1656,7 @@ new file mode 100644
 +	}
 +	dump_gmu("msgs");
 +	if (!gmu_core_power()) {
++		dump_gmu("core-fail");
 +		IOLog("POLARIS GPU: core power incomplete; HFI is already up\n");
 +	}
 +	dump_gmu("done");
