@@ -1,4 +1,4 @@
-name: xnu
+name: polaris-release
 
 on:
   workflow_dispatch:
