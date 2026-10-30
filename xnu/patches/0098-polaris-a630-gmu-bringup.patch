@@ -2,7 +2,7 @@ diff --git a/iokit/Kernel/arm/PolarisAdreno.cpp b/iokit/Kernel/arm/PolarisAdreno
 new file mode 100644
 --- /dev/null
 +++ b/iokit/Kernel/arm/PolarisAdreno.cpp
-@@ -0,0 +1,2123 @@
+@@ -0,0 +1,2127 @@
 +/*
 + * polaris: the Adreno 630 of the Xiaomi Mi MIX 2S (SDM845 v2, A630v2) for
 + * programs to draw with, behind the hardware interface (redwood_gpu_*) that
@@ -239,12 +239,16 @@ new file mode 100644
 +	uint32_t status, start_addr, type, queue_size, msg_size, drop_cnt;
 +	uint32_t rx_wm, tx_wm, rx_req, tx_req, read_index, write_index;
 +};
++#define HFI_QUEUE_SLOTS         17
 +struct hfi_queue_table {
 +	struct hfi_queue_table_header qtbl_hdr;
-+	struct hfi_queue_header qhdr[HFI_QUEUES];
++	struct hfi_queue_header qhdr[HFI_QUEUE_SLOTS];
 +};
 +
-+#define HFI_QUEUE_OFFSET(i) (sizeof(struct hfi_queue_table) + (i) * (HFI_QUEUE_SIZE + 16))
++/* The vendor table has 17 queue-header slots even when only 3 are active;
++ * the GMU walks all of them.  Queue data starts after the 16-byte-aligned
++ * table, one 4 KiB page apart. */
++#define HFI_QUEUE_OFFSET(i) (((sizeof(struct hfi_queue_table) + 15) & ~15ull) + (i) * HFI_QUEUE_SIZE)
 +
 +struct hfi_msg_hdr {
 +	uint32_t id:8, size:8, type:4, seqnum:12;
