@@ -2,7 +2,7 @@ diff --git a/iokit/Kernel/arm/PolarisAdreno.cpp b/iokit/Kernel/arm/PolarisAdreno
 new file mode 100644
 --- /dev/null
 +++ b/iokit/Kernel/arm/PolarisAdreno.cpp
-@@ -0,0 +1,2236 @@
+@@ -0,0 +1,2200 @@
 +/*
 + * polaris: the Adreno 630 of the Xiaomi Mi MIX 2S (SDM845 v2, A630v2) for
 + * programs to draw with, behind the hardware interface (redwood_gpu_*) that
@@ -1274,47 +1274,11 @@ new file mode 100644
 +	wr(gmu, GMU_RSCC_PDC_SEQ_START_ADDR, 0x4520);
 +	wr(gmu, GMU_RSCC_PDC_MATCH_VALUE_LO, 0x4510);
 +	wr(gmu, GMU_RSCC_PDC_MATCH_VALUE_HI, 0x4514);
-+	wr(gmu, GMU_RSCC_SEQ_MEM_0_DRV0 + 0, 0xa7a506a0);
-+	wr(gmu, GMU_RSCC_SEQ_MEM_0_DRV0 + 4, 0xa1e6a6e7);
-+	wr(gmu, GMU_RSCC_SEQ_MEM_0_DRV0 + 8, 0xa2e081e1);
-+	wr(gmu, GMU_RSCC_SEQ_MEM_0_DRV0 + 12, 0xe9a982e2);
-+	wr(gmu, GMU_RSCC_SEQ_MEM_0_DRV0 + 16, 0x0020e8a8);
-+
-+	/* PDC program for GPU power up/down (same source). */
-+	wr(pdc, 4 * PDC_GPU_SEQ_MEM_0 + 0, 0xfebea1e1);
-+	wr(pdc, 4 * PDC_GPU_SEQ_MEM_0 + 4, 0xa5a4a3a2);
-+	wr(pdc, 4 * PDC_GPU_SEQ_MEM_0 + 8, 0x8382a6e0);
-+	wr(pdc, 4 * PDC_GPU_SEQ_MEM_0 + 12, 0xbce3e284);
-+	wr(pdc, 4 * PDC_GPU_SEQ_MEM_0 + 16, 0x002081fc);
-+
-+	wr(pdc, 4 * PDC_GPU_TCS1_CMD_ENABLE_BANK, 7);
-+	wr(pdc, 4 * PDC_GPU_TCS1_CMD_WAIT_FOR_CMPL_BANK, 0);
-+	wr(pdc, 4 * PDC_GPU_TCS1_CONTROL, 0);
-+	wr(pdc, 4 * PDC_GPU_TCS1_CMD0_MSGID, 0x10108);
-+	wr(pdc, 4 * PDC_GPU_TCS1_CMD0_ADDR, 0x30010);
-+	wr(pdc, 4 * PDC_GPU_TCS1_CMD0_DATA, 1);
-+	wr(pdc, 4 * (PDC_GPU_TCS1_CMD0_MSGID + 4), 0x10108);
-+	wr(pdc, 4 * (PDC_GPU_TCS1_CMD0_ADDR + 4), 0x30000);
-+	wr(pdc, 4 * (PDC_GPU_TCS1_CMD0_DATA + 4), 0);
-+	wr(pdc, 4 * (PDC_GPU_TCS1_CMD0_MSGID + 8), 0x10108);
-+	wr(pdc, 4 * (PDC_GPU_TCS1_CMD0_ADDR + 8), 0x30080);
-+	wr(pdc, 4 * (PDC_GPU_TCS1_CMD0_DATA + 8), 0);
-+
-+	wr(pdc, 4 * PDC_GPU_TCS3_CMD_ENABLE_BANK, 7);
-+	wr(pdc, 4 * PDC_GPU_TCS3_CMD_WAIT_FOR_CMPL_BANK, 0);
-+	wr(pdc, 4 * PDC_GPU_TCS3_CONTROL, 0);
-+	wr(pdc, 4 * PDC_GPU_TCS3_CMD0_MSGID, 0x10108);
-+	wr(pdc, 4 * PDC_GPU_TCS3_CMD0_ADDR, 0x30010);
-+	wr(pdc, 4 * PDC_GPU_TCS3_CMD0_DATA, 2);
-+	wr(pdc, 4 * (PDC_GPU_TCS3_CMD0_MSGID + 4), 0x10108);
-+	wr(pdc, 4 * (PDC_GPU_TCS3_CMD0_ADDR + 4), 0x30000);
-+	wr(pdc, 4 * (PDC_GPU_TCS3_CMD0_DATA + 4), 3);
-+	wr(pdc, 4 * (PDC_GPU_TCS3_CMD0_MSGID + 8), 0x10108);
-+	wr(pdc, 4 * (PDC_GPU_TCS3_CMD0_ADDR + 8), 0x30080);
-+	wr(pdc, 4 * (PDC_GPU_TCS3_CMD0_DATA + 8), 3);
-+
-+	wr(pdc, 4 * PDC_GPU_SEQ_START_ADDR, 0);
-+	wr(pdc, 4 * PDC_GPU_ENABLE_PDC, 0x80000001);
++	/* Do not overwrite RSCC_SEQ_MEM or the PDC TCS program.  The stock
++	 * bootloader already programmed them for this A630; replacing them
++	 * with another SoC's sequence makes the RSC ignore the wake request
++	 * (GMU_RSCC_CONTROL_ACK stays 0).  The vendor _load_gmu_rpmh_ucode
++	 * only writes the handshake registers above. */
 +	__asm__ volatile ("dsb sy" ::: "memory");
 +}
 +
