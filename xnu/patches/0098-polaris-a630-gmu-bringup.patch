@@ -2,7 +2,7 @@ diff --git a/iokit/Kernel/arm/PolarisAdreno.cpp b/iokit/Kernel/arm/PolarisAdreno
 new file mode 100644
 --- /dev/null
 +++ b/iokit/Kernel/arm/PolarisAdreno.cpp
-@@ -0,0 +1,2398 @@
+@@ -0,0 +1,2407 @@
 +/*
 + * polaris: the Adreno 630 of the Xiaomi Mi MIX 2S (SDM845 v2, A630v2) for
 + * programs to draw with, behind the hardware interface (redwood_gpu_*) that
@@ -1479,52 +1479,61 @@ new file mode 100644
 +static bool
 +gmu_gfx_rail_on(void)
 +{
-+	bool ok;
++	bool ok, ok_low;
 +	/* Mainline's legacy A6xx BOOT_SLUMBER handshake votes the highest
-+	 * available ARC level, not the DTB initial-pwrlevel: the GMU uses this
-+	 * vote to bring the rail up before it has an HFI DCVS table. */
++	 * available ARC level.  The DTB initial-pwrlevel is 280 MHz, whose
++	 * OPP voltage is VLVL 320 (gx=6); try both, because the GMU firmware
++	 * may validate the vote index against the OPP table it was built
++	 * with. */
 +	uint32_t vote = arc_vote(385, &gfx_levels, &mx_levels, &ok); /* gx=8, VLVL 416 */
++	uint32_t vote_low = arc_vote(257, &gfx_levels, &mx_levels, &ok_low); /* gx=6, VLVL 320 */
 +	uint32_t gx = vote & 0xff, mx = (vote >> 8) & 0xff;
++	uint32_t gx_low = vote_low & 0xff;
 +
 +	if (!ok) {
 +		gx = mx = 0;
 +	}
-+	IOLog("POLARIS GPU: rail vote raw=%08x gx=%u mx=%u ok=%d\n", vote, gx, mx, ok);
++	if (!ok_low) {
++		gx_low = 0;
++	}
++	IOLog("POLARIS GPU: rail votes high raw=%08x gx=%u mx=%u ok=%d low raw=%08x gx=%u ok=%d\n",
++	    vote, gx, mx, ok, vote_low, gx_low, ok_low);
 +	IOLog("POLARIS GPU: rail pre rpmh_ctrl=%08x hyst=%08x state=%08x req=%08x ack=%08x busy=%08x\n",
 +	    rd(gmu, GMU_RPMH_CTRL), rd(gmu, GMU_RPMH_HYST_CTRL),
 +	    rd(gmu, GMU_RPMH_POWER_STATE), rd(gmu, GMU_RSCC_CONTROL_REQ),
 +	    rd(gmu, GMU_RSCC_CONTROL_ACK), rd(gmu, GMU_RSCC_SEQ_BUSY_DRV0));
 +	for (int attempt = 0; attempt < 2; attempt++) {
-+		/* The A630 legacy firmware's host2gmu pending bit for
-+		 * BOOT_SLUMBER may be one below the vendor header's BIT(22);
-+		 * the first attempt uses 22, the diagnostic retry uses 21 and
-+		 * also accepts a shifted ACK at bit 29. */
-+		uint32_t set_bit = attempt == 0 ? 22 : 21;
-+		uint32_t ack_mask = attempt == 0 ? (1u << 30) : ((1u << 30) | (1u << 29));
++		/* First the highest vote; the retry uses the 280 MHz OPP's
++		 * VLVL and also accepts the firmware's INFO bit 23, which is
++		 * the only response the A630 legacy GMU gives to BIT(22). */
++		uint32_t attempt_gx = attempt == 0 ? gx : gx_low;
++		uint32_t ack_mask = attempt == 0 ? (1u << 30) : ((1u << 30) | (1u << 23));
 +
 +		if (attempt) {
 +			wr(gmu, GMU_GMU2HOST_INTR_CLR, 0xffffffff);
-+			wr(gmu, GMU_HOST2GMU_INTR_SET, (1u << 30) | (1u << 29));
++			wr(gmu, GMU_HOST2GMU_INTR_SET, (1u << 30) | (1u << 23));
 +			IODelay(1000);
 +		}
 +		wr(gmu, GMU_BOOT_SLUMBER_OPTION, 0);
-+		wr(gmu, GMU_GX_VOTE_IDX, gx);
++		wr(gmu, GMU_GX_VOTE_IDX, attempt_gx);
 +		wr(gmu, GMU_MX_VOTE_IDX, mx);
-+		IOLog("POLARIS GPU: rail attempt %d set bit %u pre-set raw=%08x intr=%08x state=%08x status0=%08x tcs0=%08x\n",
-+		    attempt, set_bit, rd(gmu, GMU_HOST2GMU_INTR_RAW_INFO), rd(gmu, GMU_GMU2HOST_INTR_INFO),
++		IOLog("POLARIS GPU: rail attempt %d gx=%u pre-set raw=%08x intr=%08x state=%08x status0=%08x tcs0=%08x\n",
++		    attempt, attempt_gx, rd(gmu, GMU_HOST2GMU_INTR_RAW_INFO), rd(gmu, GMU_GMU2HOST_INTR_INFO),
 +		    rd(gmu, GMU_RPMH_POWER_STATE), rd(gmu, GMU_GPU_RSCC_RSC_STATUS0_DRV0),
 +		    rd(gmu, GMU_RSCC_TCS0_DRV0_STATUS));
-+		wr(gmu, GMU_HOST2GMU_INTR_SET, 1u << set_bit);
-+		IOLog("POLARIS GPU: rail attempt %d post intr=%08x raw=%08x state=%08x gx=%08x mx=%08x\n",
-+		    attempt, rd(gmu, GMU_GMU2HOST_INTR_INFO), rd(gmu, GMU_HOST2GMU_INTR_RAW_INFO),
++		wr(gmu, GMU_HOST2GMU_INTR_SET, 1u << 22);
++		IOLog("POLARIS GPU: rail attempt %d gx=%u post intr=%08x raw=%08x state=%08x gx=%08x mx=%08x\n",
++		    attempt, attempt_gx, rd(gmu, GMU_GMU2HOST_INTR_INFO), rd(gmu, GMU_HOST2GMU_INTR_RAW_INFO),
 +		    rd(gmu, GMU_RPMH_POWER_STATE), rd(gmu, GMU_GX_VOTE_IDX), rd(gmu, GMU_MX_VOTE_IDX));
 +		if (oob_poll(ack_mask)) {
++			IOLog("POLARIS GPU: rail attempt %d accepted intr=%08x raw=%08x\n",
++			    attempt, rd(gmu, GMU_GMU2HOST_INTR_INFO), rd(gmu, GMU_HOST2GMU_INTR_RAW_INFO));
 +			wr(gmu, GMU_GMU2HOST_INTR_CLR, ack_mask);
 +			break;
 +		}
 +		if (attempt == 0) {
-+			IOLog("POLARIS GPU: BOOT_SLUMBER bit 22 timed out (intr=%08x raw=%08x); retrying bit 21\n",
-+			    rd(gmu, GMU_GMU2HOST_INTR_INFO), rd(gmu, GMU_HOST2GMU_INTR_RAW_INFO));
++			IOLog("POLARIS GPU: BOOT_SLUMBER gx=%u timed out (intr=%08x raw=%08x); retrying gx=%u\n",
++			    attempt_gx, rd(gmu, GMU_GMU2HOST_INTR_INFO), rd(gmu, GMU_HOST2GMU_INTR_RAW_INFO), gx_low);
 +			continue;
 +		}
 +		IOLog("POLARIS GPU: no BOOT_SLUMBER_ACK intr=%08x raw=%08x state=%08x status0=%08x tcs=%08x/%08x/%08x/%08x ack=%08x busy=%08x ao_int=%08x ao_busy=%08x sptprac=%08x gdscr=%08x\n",
