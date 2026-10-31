@@ -2,7 +2,7 @@ diff --git a/iokit/Kernel/arm/PolarisAdreno.cpp b/iokit/Kernel/arm/PolarisAdreno
 new file mode 100644
 --- /dev/null
 +++ b/iokit/Kernel/arm/PolarisAdreno.cpp
-@@ -0,0 +1,2225 @@
+@@ -0,0 +1,2248 @@
 +/*
 + * polaris: the Adreno 630 of the Xiaomi Mi MIX 2S (SDM845 v2, A630v2) for
 + * programs to draw with, behind the hardware interface (redwood_gpu_*) that
@@ -1641,6 +1641,28 @@ new file mode 100644
 +}
 +
 +static void
++dump_gmu_log(const char *tag)
++{
++	uint32_t next, entries;
++	volatile uint32_t *log;
++
++	if (!gpu_dump || dump_mem.va == 0) {
++		return;
++	}
++	next = rd(gmu, GMU_PWR_COL_CP_RESP) & 0xffff;
++	entries = (uint32_t)(dump_mem.size / 16);
++	log = (volatile uint32_t *)dump_mem.va;
++	IOLog("POLARIS GPU: GMU[%s] log next=%u entries=%u\n", tag, next, entries);
++	for (uint32_t i = next > 40 ? next - 40 : 0; i < next && i + 4 <= entries; i += 4) {
++		IOLog("POLARIS GPU: GMU[%s] log %08x %08x %08x %08x | %08x %08x %08x %08x | %08x %08x %08x %08x | %08x %08x %08x %08x\n",
++		    tag, log[4 * i], log[4 * i + 1], log[4 * i + 2], log[4 * i + 3],
++		    log[4 * i + 4], log[4 * i + 5], log[4 * i + 6], log[4 * i + 7],
++		    log[4 * i + 8], log[4 * i + 9], log[4 * i + 10], log[4 * i + 11],
++		    log[4 * i + 12], log[4 * i + 13], log[4 * i + 14], log[4 * i + 15]);
++	}
++}
++
++static void
 +dump_gpu(const char *tag)
 +{
 +	if (!gpu_dump) {
@@ -1718,6 +1740,7 @@ new file mode 100644
 +	dump_rsc("rsc");
 +	if (!gmu_gfx_rail_on()) {
 +		dump_gmu("rail-fail");
++		dump_gmu_log("rail-fail");
 +		return false;
 +	}
 +	dump_gmu("rail");
