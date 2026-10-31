@@ -2,7 +2,7 @@ diff --git a/iokit/Kernel/arm/PolarisAdreno.cpp b/iokit/Kernel/arm/PolarisAdreno
 new file mode 100644
 --- /dev/null
 +++ b/iokit/Kernel/arm/PolarisAdreno.cpp
-@@ -0,0 +1,2594 @@
+@@ -0,0 +1,2629 @@
 +/*
 + * polaris: the Adreno 630 of the Xiaomi Mi MIX 2S (SDM845 v2, A630v2) for
 + * programs to draw with, behind the hardware interface (redwood_gpu_*) that
@@ -1301,6 +1301,31 @@ new file mode 100644
 +	return answered;
 +}
 +
++/* A630's H2F_MSG_DCVS_VOTE (30) is ACK_NONBLOCK in the vendor driver: the
++ * GMU consumes it without sending an answer.  Ring the doorbell and return. */
++static void
++hfi_send_noblock(uint32_t id, void *message, uint32_t words)
++{
++	struct hfi_msg_hdr *h = (struct hfi_msg_hdr *)message;
++	volatile struct hfi_queue_header *q = &hfi->qhdr[0];
++	volatile uint32_t *data = (volatile uint32_t *)(hfi_mem.va + (hfi_mem.iova & 0xfff) + HFI_QUEUE_OFFSET(0));
++	uint32_t number = ++hfi_seq & 0xfff;
++	uint32_t at = q->write_index % HFI_QUEUE_WORDS;
++
++	h->id = id;
++	h->size = words;
++	h->type = 0;
++	h->seqnum = number;
++	for (uint32_t i = 0; i < words; i++) {
++		data[at] = ((uint32_t *)message)[i];
++		at = (at + 1) % HFI_QUEUE_WORDS;
++	}
++	q->write_index = at;
++	dcache_sync(hfi_mem.va, hfi_mem.size);
++	__asm__ volatile ("dsb sy" ::: "memory");
++	wr(gmu, GMU_HOST2GMU_INTR_SET, 1);
++}
++
 +/* ---------------------------------------------------------------- RSC/PDC */
 +
 +static void
@@ -1737,22 +1762,13 @@ new file mode 100644
 +		IOLog("POLARIS GPU: HFI bandwidth table failed (verdict %u)\n", verdict);
 +	}
 +
-+	/* The A630 firmware is an HFI power controller, not the legacy OOB
-+	 * one: HackiOS's A660 path starts the core firmware and sends the GX
-+	 * perf/bw vote before asking for the core.  The legacy host2gmu OOB
-+	 * bits 16..23 stay silent on this firmware. */
-+	uint32_t core_start[2] = { 0, 0 };
-+	uint32_t gx_vote[4] = { 0, 1, 1, 0xff };      /* at-least, perf_idx 1 (257 MHz), no bw change */
-+	if (hfi_send(14 /* HFI_CORE_FW_START */, core_start, 2, &verdict) && verdict == 0) {
-+		IOLog("POLARIS GPU: HFI core firmware start accepted\n");
-+	} else {
-+		IOLog("POLARIS GPU: HFI core firmware start failed (verdict %u)\n", verdict);
-+	}
-+	if (hfi_send(30 /* HFI_GX_BW_PERF_VOTE */, gx_vote, 4, &verdict) && verdict == 0) {
-+		IOLog("POLARIS GPU: HFI GX perf vote accepted\n");
-+	} else {
-+		IOLog("POLARIS GPU: HFI GX perf vote failed (verdict %u)\n", verdict);
-+	}
++	/* A630 HFI has no CORE_FW_START (14); H2F_MSG_DCVS_VOTE (30) is the
++	 * power request.  ack_type=0 (ACK_NONBLOCK), freq.raw is
++	 * OPTION_AT_LEAST<<28 | perf_idx, bw.raw=0xff (no bandwidth change).
++	 * The vendor sends this without waiting for an answer. */
++	uint32_t dcvs_vote[4] = { 0, 0, (3u << 28) | 1, 0xff };
++	hfi_send_noblock(30, dcvs_vote, 4);
++	IOLog("POLARIS GPU: HFI DCVS vote sent (perf 1, at-least)\n");
 +
 +	if (hfi_send(HFI_MSG_TEST, &test, sizeof(test) / 4, &verdict) && verdict == 0) {
 +		IOLog("POLARIS GPU: HFI TEST accepted (register DCVS mode)\n");
@@ -2089,6 +2105,25 @@ new file mode 100644
 +		IOLog("POLARIS GPU: HFI messages before rail-on failed; continuing to sweep\n");
 +	}
 +	dump_gmu("msgs-pre");
++	/* The DCVS vote may power the rail without any OOB grant.  Give the
++	 * GMU time to run its RPMh sequence, then check the rail state. */
++	IODelay(10000);
++	IOLog("POLARIS GPU: after HFI DCVS sp=%08x gdscr=%08x rpmh=%08x\n",
++	    rd(gmu, GMU_SPTPRAC_PWR_CLK_STATUS), rd(gpucc, GPUCC_GX_GDSCR),
++	    rd(gmu, GMU_RPMH_POWER_STATE));
++	if ((rd(gmu, GMU_SPTPRAC_PWR_CLK_STATUS) & 0xc0) == 0) {
++		IOLog("POLARIS GPU: GX rail is up via the HFI DCVS vote\n");
++		core_up = true;
++		dump_gmu("core");
++		dump_hfi("core");
++		dump_gmu("done");
++		IOLog("POLARIS GPU: STAGE 1: gmu %s core %s; fw %08x hfi %08x sp %08x rpmh %08x fence %08x aon %08x%08x\n",
++		    gmu_up ? "up" : "?", core_up ? "on" : "off", rd(gmu, GMU_CM3_FW_INIT_RESULT),
++		    rd(gmu, GMU_HFI_CTRL_STATUS), rd(gmu, GMU_SPTPRAC_PWR_CLK_STATUS),
++		    rd(gmu, GMU_RPMH_POWER_STATE), rd(gmu, GMU_AHB_FENCE_STATUS),
++		    rd(gmu, GMU_ALWAYS_ON_COUNTER_H), rd(gmu, GMU_ALWAYS_ON_COUNTER_L));
++		return true;
++	}
 +	if (!gmu_core_request()) {
 +		dump_gmu("core-fail");
 +		dump_rsc("core-fail");
