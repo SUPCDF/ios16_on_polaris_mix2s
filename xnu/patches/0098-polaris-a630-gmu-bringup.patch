@@ -2,7 +2,7 @@ diff --git a/iokit/Kernel/arm/PolarisAdreno.cpp b/iokit/Kernel/arm/PolarisAdreno
 new file mode 100644
 --- /dev/null
 +++ b/iokit/Kernel/arm/PolarisAdreno.cpp
-@@ -0,0 +1,2409 @@
+@@ -0,0 +1,2412 @@
 +/*
 + * polaris: the Adreno 630 of the Xiaomi Mi MIX 2S (SDM845 v2, A630v2) for
 + * programs to draw with, behind the hardware interface (redwood_gpu_*) that
@@ -1506,7 +1506,10 @@ new file mode 100644
 +		 * Only INFO bit 30 is a real BOOT_SLUMBER ACK. */
 +		uint32_t set_bit = attempt == 0 ? 21 : 22;
 +		uint32_t attempt_gx = attempt == 0 ? gx_low : gx;
-+		uint32_t ack_mask = 1u << 30;
++		/* The firmware's BIT(22) path ORs bit 6 into its internal
++		 * status word; the vendor header says bit 30.  Accept both and
++		 * let the log show which one the A630 firmware actually uses. */
++		uint32_t ack_mask = (1u << 30) | (1u << 6);
 +
 +		if (attempt) {
 +			/* Clear only the BOOT_SLUMBER acknowledge.  Writing the
@@ -1546,7 +1549,7 @@ new file mode 100644
 +		    rd(gmu, GMU_RSCC_CONTROL_ACK), rd(gmu, GMU_RSCC_SEQ_BUSY_DRV0),
 +		    rd(gmu, GMU_AO_HOST_INTERRUPT_STATUS), rd(gmu, GMU_AO_GPU_CX_BUSY_STATUS),
 +		    rd(gmu, GMU_SPTPRAC_PWR_CLK_STATUS), rd(gpucc, GPUCC_GX_GDSCR));
-+		wr(gmu, GMU_GMU2HOST_INTR_CLR, 1u << 30);
++		wr(gmu, GMU_GMU2HOST_INTR_CLR, ack_mask);
 +		wr(gmu, GMU_HOST2GMU_INTR_SET, 1u << 30);
 +		return false;
 +	}
