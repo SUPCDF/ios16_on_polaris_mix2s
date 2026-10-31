@@ -2,7 +2,7 @@ diff --git a/iokit/Kernel/arm/PolarisAdreno.cpp b/iokit/Kernel/arm/PolarisAdreno
 new file mode 100644
 --- /dev/null
 +++ b/iokit/Kernel/arm/PolarisAdreno.cpp
-@@ -0,0 +1,2525 @@
+@@ -0,0 +1,2530 @@
 +/*
 + * polaris: the Adreno 630 of the Xiaomi Mi MIX 2S (SDM845 v2, A630v2) for
 + * programs to draw with, behind the hardware interface (redwood_gpu_*) that
@@ -2006,6 +2006,16 @@ new file mode 100644
 +	dump_gmu("start");
 +	dump_irq("start");
 +	dump_hfi("start");
++	/* The A630 firmware's host2gmu OOB handler may be part of the HFI
++	 * task; start the queues before the rail-on request so the sweep can
++	 * tell whether the handler is alive. */
++	if (!gmu_hfi_start()) {
++		dump_gmu("hfi-fail");
++		dump_hfi("hfi-fail");
++		return false;
++	}
++	dump_gmu("hfi-pre");
++	dump_hfi("hfi-pre");
 +	if (!gmu_gfx_rail_on()) {
 +		dump_gmu("rail-fail");
 +		dump_rsc("rail-fail");
@@ -2021,11 +2031,6 @@ new file mode 100644
 +		return false;
 +	}
 +	dump_gmu("rail");
-+	if (!gmu_hfi_start()) {
-+		dump_gmu("hfi-fail");
-+		dump_hfi("hfi-fail");
-+		return false;
-+	}
 +	dump_gmu("hfi");
 +	dump_hfi("hfi");
 +	if (!gmu_hfi_messages()) {
