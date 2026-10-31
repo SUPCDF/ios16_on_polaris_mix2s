@@ -1775,7 +1775,7 @@ new file mode 100644
 +	 * power request.  ack_type=0 (ACK_NONBLOCK), freq.raw is
 +	 * OPTION_AT_LEAST<<28 | perf_idx, bw.raw=0xff (no bandwidth change).
 +	 * The HFI header is still HFI_MSG_CMD, so the GMU answers. */
-+	uint32_t dcvs_vote[4] = { 0, 0, (3u << 28) | 1, 0xff };
++	uint32_t dcvs_vote[4] = { 0, 0, (3u << 28) | 1, 0 };   /* bw_idx 0: our BW table has one level */
 +	hfi_send_noblock(30, dcvs_vote, 4);
 +	IOLog("POLARIS GPU: HFI DCVS vote sent (perf 1, at-least, nonblock)\n");
 +	return true;
