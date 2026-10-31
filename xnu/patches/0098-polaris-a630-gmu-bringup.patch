@@ -76,8 +76,8 @@ new file mode 100644
 +#define ZAP_REGION      0x8c415000ull
 +#define ZAP_REGION_SIZE 0x2000
 +#define GPU_PAS_ID      13
-+#define GPU_CHIP_ID     0x06030001ull           /* SDM845 v2 / A630v2 */
-+#define GPU_CHIP_FW     0x06030100ull           /* vendor compression for HFI */
++#define GPU_CHIP_ID     0x06030500ull           /* SDM845 v2 / A630v2, DTB qcom,chipid */
++#define GPU_CHIP_FW     0x06035000ull           /* vendor compression for the GMU SFR */
 +
 +/* GCC (sdm845) */
 +#define GCC_PLL_VOTE                    0x52004
