@@ -2,7 +2,7 @@ diff --git a/iokit/Kernel/arm/PolarisAdreno.cpp b/iokit/Kernel/arm/PolarisAdreno
 new file mode 100644
 --- /dev/null
 +++ b/iokit/Kernel/arm/PolarisAdreno.cpp
-@@ -0,0 +1,2530 @@
+@@ -0,0 +1,2534 @@
 +/*
 + * polaris: the Adreno 630 of the Xiaomi Mi MIX 2S (SDM845 v2, A630v2) for
 + * programs to draw with, behind the hardware interface (redwood_gpu_*) that
@@ -2016,6 +2016,14 @@ new file mode 100644
 +	}
 +	dump_gmu("hfi-pre");
 +	dump_hfi("hfi-pre");
++	/* Send the HFI INIT/tables before the rail-on OOB.  The A630 firmware
++	 * may only arm its host2gmu OOB handler once the HFI INIT message has
++	 * configured its RPMh/OOB tables; if this fails we still run the
++	 * sweep to capture the state. */
++	if (!gmu_hfi_messages()) {
++		IOLog("POLARIS GPU: HFI messages before rail-on failed; continuing to sweep\n");
++	}
++	dump_gmu("msgs-pre");
 +	if (!gmu_gfx_rail_on()) {
 +		dump_gmu("rail-fail");
 +		dump_rsc("rail-fail");
@@ -2033,10 +2041,6 @@ new file mode 100644
 +	dump_gmu("rail");
 +	dump_gmu("hfi");
 +	dump_hfi("hfi");
-+	if (!gmu_hfi_messages()) {
-+		IOLog("POLARIS GPU: HFI messages failed; not requesting GX\n");
-+		return false;
-+	}
 +	dump_gmu("msgs");
 +	if (!gmu_gpu_set()) {
 +		dump_gmu("core-fail");
