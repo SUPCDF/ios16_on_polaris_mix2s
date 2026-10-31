@@ -2,7 +2,7 @@ diff --git a/iokit/Kernel/arm/PolarisAdreno.cpp b/iokit/Kernel/arm/PolarisAdreno
 new file mode 100644
 --- /dev/null
 +++ b/iokit/Kernel/arm/PolarisAdreno.cpp
-@@ -0,0 +1,2639 @@
+@@ -0,0 +1,2668 @@
 +/*
 + * polaris: the Adreno 630 of the Xiaomi Mi MIX 2S (SDM845 v2, A630v2) for
 + * programs to draw with, behind the hardware interface (redwood_gpu_*) that
@@ -1612,6 +1612,21 @@ new file mode 100644
 +	return true;
 +}
 +
++/* The HFI path still needs the vendor SPTPRAC power-on handshake on this
++ * A630: the GMU controls the GX clock through 0x00778000, not through the
++ * HFI DCVS vote alone. */
++static bool
++gmu_sptprac_on(void)
++{
++	wr(gmu, GMU_GX_SPTPRAC_POWER_CONTROL, 0x00778000);
++	if (!poll(gmu, GMU_SPTPRAC_PWR_CLK_STATUS, 0x38, 0x28, 100000)) {
++		IOLog("POLARIS GPU: SPTPRAC not on (%08x)\n", rd(gmu, GMU_SPTPRAC_PWR_CLK_STATUS));
++		return false;
++	}
++	IOLog("POLARIS GPU: SPTPRAC on (%08x)\n", rd(gmu, GMU_SPTPRAC_PWR_CLK_STATUS));
++	return true;
++}
++
 +/* Non-legacy A630: the HFI core-firmware start and GX perf vote power the
 + * rail; ask the GMU to keep the core up with the new GPU_SET bit 30 and
 + * wait for the grant at INFO bit 31. */
@@ -2123,6 +2138,20 @@ new file mode 100644
 +	    rd(gmu, GMU_RPMH_POWER_STATE), rail_up);
 +	if (rail_up) {
 +		IOLog("POLARIS GPU: GX rail is up via the HFI DCVS vote\n");
++		core_up = true;
++		dump_gmu("core");
++		dump_hfi("core");
++		dump_gmu("done");
++		IOLog("POLARIS GPU: STAGE 1: gmu %s core %s; fw %08x hfi %08x sp %08x rpmh %08x fence %08x aon %08x%08x\n",
++		    gmu_up ? "up" : "?", core_up ? "on" : "off", rd(gmu, GMU_CM3_FW_INIT_RESULT),
++		    rd(gmu, GMU_HFI_CTRL_STATUS), rd(gmu, GMU_SPTPRAC_PWR_CLK_STATUS),
++		    rd(gmu, GMU_RPMH_POWER_STATE), rd(gmu, GMU_AHB_FENCE_STATUS),
++		    rd(gmu, GMU_ALWAYS_ON_COUNTER_H), rd(gmu, GMU_ALWAYS_ON_COUNTER_L));
++		return true;
++	}
++	/* The DCVS vote may have powered the rail while the GX clock stayed
++	 * off; the vendor's SPTPRAC handshake turns that clock on. */
++	if (gmu_sptprac_on()) {
 +		core_up = true;
 +		dump_gmu("core");
 +		dump_hfi("core");
