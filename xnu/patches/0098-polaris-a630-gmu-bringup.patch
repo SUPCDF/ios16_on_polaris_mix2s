@@ -2,7 +2,7 @@ diff --git a/iokit/Kernel/arm/PolarisAdreno.cpp b/iokit/Kernel/arm/PolarisAdreno
 new file mode 100644
 --- /dev/null
 +++ b/iokit/Kernel/arm/PolarisAdreno.cpp
-@@ -0,0 +1,2248 @@
+@@ -0,0 +1,2301 @@
 +/*
 + * polaris: the Adreno 630 of the Xiaomi Mi MIX 2S (SDM845 v2, A630v2) for
 + * programs to draw with, behind the hardware interface (redwood_gpu_*) that
@@ -119,6 +119,7 @@ new file mode 100644
 +#define GMU_CM3_BOOT_CONFIG             GMU_WORD(0x5001)
 +#define GMU_CM3_FW_INIT_RESULT          GMU_WORD(0x501c)
 +#define GMU_CM3_CFG                     GMU_WORD(0x502d)
++#define GMU_NMI_CONTROL_STATUS          GMU_WORD(0x23f0)
 +#define GMU_SYS_BUS_CONFIG              GMU_WORD(0x4c0f)
 +#define GMU_PWR_COL_INTER_FRAME_CTRL    GMU_WORD(0x50c0)
 +#define GMU_PWR_COL_INTER_FRAME_HYST    GMU_WORD(0x50c1)
@@ -1304,6 +1305,39 @@ new file mode 100644
 +	wr(gmu, GMU_RSCC_SEQ_MEM_0_DRV0 + 8, 0xa2e081e1);
 +	wr(gmu, GMU_RSCC_SEQ_MEM_0_DRV0 + 12, 0xe9a982e2);
 +	wr(gmu, GMU_RSCC_SEQ_MEM_0_DRV0 + 16, 0x0020e8a8);
++	/* The bootloader does not program the PDC TCS sequence on the
++	 * fastboot-boot path; program it here. */
++	wr(pdc, 4 * PDC_GPU_SEQ_MEM_0 + 0, 0xfebea1e1);
++	wr(pdc, 4 * PDC_GPU_SEQ_MEM_0 + 4, 0xa5a4a3a2);
++	wr(pdc, 4 * PDC_GPU_SEQ_MEM_0 + 8, 0x8382a6e0);
++	wr(pdc, 4 * PDC_GPU_SEQ_MEM_0 + 12, 0xbce3e284);
++	wr(pdc, 4 * PDC_GPU_SEQ_MEM_0 + 16, 0x002081fc);
++	wr(pdc, 4 * PDC_GPU_TCS1_CMD_ENABLE_BANK, 7);
++	wr(pdc, 4 * PDC_GPU_TCS1_CMD_WAIT_FOR_CMPL_BANK, 0);
++	wr(pdc, 4 * PDC_GPU_TCS1_CONTROL, 0);
++	wr(pdc, 4 * PDC_GPU_TCS1_CMD0_MSGID, 0x10108);
++	wr(pdc, 4 * PDC_GPU_TCS1_CMD0_ADDR, 0x30010);
++	wr(pdc, 4 * PDC_GPU_TCS1_CMD0_DATA, 1);
++	wr(pdc, 4 * (PDC_GPU_TCS1_CMD0_MSGID + 4), 0x10108);
++	wr(pdc, 4 * (PDC_GPU_TCS1_CMD0_ADDR + 4), 0x30000);
++	wr(pdc, 4 * (PDC_GPU_TCS1_CMD0_DATA + 4), 0);
++	wr(pdc, 4 * (PDC_GPU_TCS1_CMD0_MSGID + 8), 0x10108);
++	wr(pdc, 4 * (PDC_GPU_TCS1_CMD0_ADDR + 8), 0x30080);
++	wr(pdc, 4 * (PDC_GPU_TCS1_CMD0_DATA + 8), 0);
++	wr(pdc, 4 * PDC_GPU_TCS3_CMD_ENABLE_BANK, 7);
++	wr(pdc, 4 * PDC_GPU_TCS3_CMD_WAIT_FOR_CMPL_BANK, 0);
++	wr(pdc, 4 * PDC_GPU_TCS3_CONTROL, 0);
++	wr(pdc, 4 * PDC_GPU_TCS3_CMD0_MSGID, 0x10108);
++	wr(pdc, 4 * PDC_GPU_TCS3_CMD0_ADDR, 0x30010);
++	wr(pdc, 4 * PDC_GPU_TCS3_CMD0_DATA, 2);
++	wr(pdc, 4 * (PDC_GPU_TCS3_CMD0_MSGID + 4), 0x10108);
++	wr(pdc, 4 * (PDC_GPU_TCS3_CMD0_ADDR + 4), 0x30000);
++	wr(pdc, 4 * (PDC_GPU_TCS3_CMD0_DATA + 4), 3);
++	wr(pdc, 4 * (PDC_GPU_TCS3_CMD0_MSGID + 8), 0x10108);
++	wr(pdc, 4 * (PDC_GPU_TCS3_CMD0_ADDR + 8), 0x30080);
++	wr(pdc, 4 * (PDC_GPU_TCS3_CMD0_DATA + 8), 3);
++	wr(pdc, 4 * PDC_GPU_SEQ_START_ADDR, 0);
++	wr(pdc, 4 * PDC_GPU_ENABLE_PDC, 0x80000001);
 +	__asm__ volatile ("dsb sy" ::: "memory");
 +}
 +
@@ -1407,7 +1441,7 @@ new file mode 100644
 +gmu_gfx_rail_on(void)
 +{
 +	bool ok;
-+	uint32_t vote = arc_vote(65, &gfx_levels, &mx_levels, &ok); /* vendor default OPP: initial-pwrlevel 5, 280 MHz */
++	uint32_t vote = arc_vote(321, &gfx_levels, &mx_levels, &ok); /* gx=7, VLVL 384 (vendor default OPP) */
 +	uint32_t gx = vote & 0xff, mx = (vote >> 8) & 0xff;
 +
 +	if (!ok) {
@@ -1663,6 +1697,24 @@ new file mode 100644
 +}
 +
 +static void
++dump_gmu_nmi(const char *tag)
++{
++	volatile uint32_t *dtcm = (volatile uint32_t *)((uint8_t *)gmu + GMU_CM3_DTCM_START);
++
++	if (!gpu_dump) {
++		return;
++	}
++	wr(gmu, GMU_NMI_CONTROL_STATUS, 0);
++	wr(gmu, GMU_CM3_CFG, 1u << 9);
++	__asm__ volatile ("dsb sy" ::: "memory");
++	IODelay(100);
++	for (unsigned i = 0; i < 0x100; i += 4) {
++		IOLog("POLARIS GPU: GMU[%s] dtcm %03x: %08x %08x %08x %08x\n",
++		    tag, i, dtcm[i], dtcm[i + 1], dtcm[i + 2], dtcm[i + 3]);
++	}
++}
++
++static void
 +dump_gpu(const char *tag)
 +{
 +	if (!gpu_dump) {
@@ -1741,6 +1793,7 @@ new file mode 100644
 +	if (!gmu_gfx_rail_on()) {
 +		dump_gmu("rail-fail");
 +		dump_gmu_log("rail-fail");
++		dump_gmu_nmi("rail-fail");
 +		return false;
 +	}
 +	dump_gmu("rail");
