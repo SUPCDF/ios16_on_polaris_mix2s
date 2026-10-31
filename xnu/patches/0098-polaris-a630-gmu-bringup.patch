@@ -2,7 +2,7 @@ diff --git a/iokit/Kernel/arm/PolarisAdreno.cpp b/iokit/Kernel/arm/PolarisAdreno
 new file mode 100644
 --- /dev/null
 +++ b/iokit/Kernel/arm/PolarisAdreno.cpp
-@@ -0,0 +1,2407 @@
+@@ -0,0 +1,2403 @@
 +/*
 + * polaris: the Adreno 630 of the Xiaomi Mi MIX 2S (SDM845 v2, A630v2) for
 + * programs to draw with, behind the hardware interface (redwood_gpu_*) that
@@ -385,21 +385,13 @@ new file mode 100644
 +	return false;
 +}
 +
-+/* The A630 legacy GMU reports the OOB acknowledge in the raw host/GMU
-+ * interrupt register even when GMU2HOST_INTR_INFO does not show it.  Poll
-+ * both so a real ACK is not missed; the caller still checks the rail state
-+ * afterwards. */
++/* The raw host/GMU register mirrors the host's own SET/CLR writes, so it
++ * cannot be used as an acknowledge.  Only GMU2HOST_INTR_INFO is the GMU's
++ * response; the caller still checks the rail state afterwards. */
 +static bool
 +oob_poll(uint32_t bit)
 +{
-+	for (uint32_t i = 0; i <= 100000; i++) {
-+		if ((rd(gmu, GMU_GMU2HOST_INTR_INFO) & bit) ||
-+		    (rd(gmu, GMU_HOST2GMU_INTR_RAW_INFO) & bit)) {
-+			return true;
-+		}
-+		IODelay(1);
-+	}
-+	return false;
++	return poll(gmu, GMU_GMU2HOST_INTR_INFO, bit, bit, 100000);
 +}
 +
 +static void
@@ -1503,27 +1495,31 @@ new file mode 100644
 +	    rd(gmu, GMU_RPMH_POWER_STATE), rd(gmu, GMU_RSCC_CONTROL_REQ),
 +	    rd(gmu, GMU_RSCC_CONTROL_ACK), rd(gmu, GMU_RSCC_SEQ_BUSY_DRV0));
 +	for (int attempt = 0; attempt < 2; attempt++) {
-+		/* First the highest vote; the retry uses the 280 MHz OPP's
-+		 * VLVL and also accepts the firmware's INFO bit 23, which is
-+		 * the only response the A630 legacy GMU gives to BIT(22). */
-+		uint32_t attempt_gx = attempt == 0 ? gx : gx_low;
-+		uint32_t ack_mask = attempt == 0 ? (1u << 30) : ((1u << 30) | (1u << 23));
++		/* Try the shifted host request bit first with the 280 MHz OPP's
++		 * VLVL; the vendor BIT(22) and highest vote are the retry.
++		 * Only INFO bit 30 is a real BOOT_SLUMBER ACK. */
++		uint32_t set_bit = attempt == 0 ? 21 : 22;
++		uint32_t attempt_gx = attempt == 0 ? gx_low : gx;
++		uint32_t ack_mask = 1u << 30;
 +
 +		if (attempt) {
++			/* Clear only the BOOT_SLUMBER acknowledge.  Writing the
++			 * DCVS set bit here would make the GMU run a DCVS OOB
++			 * and answer with INFO bit 23 instead. */
 +			wr(gmu, GMU_GMU2HOST_INTR_CLR, 0xffffffff);
-+			wr(gmu, GMU_HOST2GMU_INTR_SET, (1u << 30) | (1u << 23));
++			wr(gmu, GMU_HOST2GMU_INTR_SET, 1u << 30);
 +			IODelay(1000);
 +		}
 +		wr(gmu, GMU_BOOT_SLUMBER_OPTION, 0);
 +		wr(gmu, GMU_GX_VOTE_IDX, attempt_gx);
 +		wr(gmu, GMU_MX_VOTE_IDX, mx);
-+		IOLog("POLARIS GPU: rail attempt %d gx=%u pre-set raw=%08x intr=%08x state=%08x status0=%08x tcs0=%08x\n",
-+		    attempt, attempt_gx, rd(gmu, GMU_HOST2GMU_INTR_RAW_INFO), rd(gmu, GMU_GMU2HOST_INTR_INFO),
++		IOLog("POLARIS GPU: rail attempt %d set=%u gx=%u pre-set raw=%08x intr=%08x state=%08x status0=%08x tcs0=%08x\n",
++		    attempt, set_bit, attempt_gx, rd(gmu, GMU_HOST2GMU_INTR_RAW_INFO), rd(gmu, GMU_GMU2HOST_INTR_INFO),
 +		    rd(gmu, GMU_RPMH_POWER_STATE), rd(gmu, GMU_GPU_RSCC_RSC_STATUS0_DRV0),
 +		    rd(gmu, GMU_RSCC_TCS0_DRV0_STATUS));
-+		wr(gmu, GMU_HOST2GMU_INTR_SET, 1u << 22);
-+		IOLog("POLARIS GPU: rail attempt %d gx=%u post intr=%08x raw=%08x state=%08x gx=%08x mx=%08x\n",
-+		    attempt, attempt_gx, rd(gmu, GMU_GMU2HOST_INTR_INFO), rd(gmu, GMU_HOST2GMU_INTR_RAW_INFO),
++		wr(gmu, GMU_HOST2GMU_INTR_SET, 1u << set_bit);
++		IOLog("POLARIS GPU: rail attempt %d set=%u gx=%u post intr=%08x raw=%08x state=%08x gx=%08x mx=%08x\n",
++		    attempt, set_bit, attempt_gx, rd(gmu, GMU_GMU2HOST_INTR_INFO), rd(gmu, GMU_HOST2GMU_INTR_RAW_INFO),
 +		    rd(gmu, GMU_RPMH_POWER_STATE), rd(gmu, GMU_GX_VOTE_IDX), rd(gmu, GMU_MX_VOTE_IDX));
 +		if (oob_poll(ack_mask)) {
 +			IOLog("POLARIS GPU: rail attempt %d accepted intr=%08x raw=%08x\n",
