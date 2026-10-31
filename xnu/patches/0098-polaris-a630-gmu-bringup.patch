@@ -2,7 +2,7 @@ diff --git a/iokit/Kernel/arm/PolarisAdreno.cpp b/iokit/Kernel/arm/PolarisAdreno
 new file mode 100644
 --- /dev/null
 +++ b/iokit/Kernel/arm/PolarisAdreno.cpp
-@@ -0,0 +1,2403 @@
+@@ -0,0 +1,2409 @@
 +/*
 + * polaris: the Adreno 630 of the Xiaomi Mi MIX 2S (SDM845 v2, A630v2) for
 + * programs to draw with, behind the hardware interface (redwood_gpu_*) that
@@ -1360,19 +1360,25 @@ new file mode 100644
 +{
 +	uint32_t status = rd(gmu, GMU_GPU_RSCC_RSC_STATUS0_DRV0);
 +
-+	/* The GMU's RPMh channel is a sequencer in the always-on block.  The
-+	 * vendor only asks it to wake when it has been handed to the
-+	 * always-on sequencer (RSC_STATUS0 bit 16); writing the request when
-+	 * it is already awake leaves ACK clear and is not an error.  Do this
-+	 * before the CM3 starts: the firmware's first RPMh vote needs the
-+	 * channel awake. */
-+	IOLog("POLARIS GPU: RSC status %08x (asleep %u) req %08x ack %08x busy %08x\n",
++	/* Reset the GMU's RPMh handshake: hand the channel to the always-on
++	 * sequencer, wait for the sleep state, then take it back.  HackiOS
++	 * does this in stale_stop/step_gmu_start, and it is the only way to
++	 * recover an RSC that the bootloader left half-awake.  Do it before
++	 * the CM3 starts. */
++	IOLog("POLARIS GPU: RSC status before cycle %08x (asleep %u) req %08x ack %08x busy %08x\n",
 +	    status, !!(status & (1u << 16)), rd(gmu, GMU_RSCC_CONTROL_REQ),
 +	    rd(gmu, GMU_RSCC_CONTROL_ACK), rd(gmu, GMU_RSCC_SEQ_BUSY_DRV0));
-+	if (!(status & (1u << 16))) {
-+		IOLog("POLARIS GPU: RSC already awake; no wake request\n");
-+		return;
++	wr(gmu, GMU_RSCC_CONTROL_REQ, 1);
++	if (!poll(gmu, GMU_GPU_RSCC_RSC_STATUS0_DRV0, 1u << 16, 1u << 16, 100000)) {
++		IOLog("POLARIS GPU: RSC did not sleep (status %08x)\n",
++		    rd(gmu, GMU_GPU_RSCC_RSC_STATUS0_DRV0));
++	} else {
++		IOLog("POLARIS GPU: RSC asleep (status %08x)\n",
++		    rd(gmu, GMU_GPU_RSCC_RSC_STATUS0_DRV0));
 +	}
++	wr(gmu, GMU_RSCC_CONTROL_REQ, 0);
++	IODelay(1000);
++
 +	wr(gmu, GMU_RSCC_CONTROL_REQ, 2);
 +	if (!poll(gmu, GMU_RSCC_CONTROL_ACK, 2, 2, 100000)) {
 +		IOLog("POLARIS GPU: RSC wake not acknowledged (req %08x ack %08x busy %08x status %08x)\n",
@@ -1383,7 +1389,7 @@ new file mode 100644
 +		IOLog("POLARIS GPU: RSC sequencer stays busy (%08x)\n", rd(gmu, GMU_RSCC_SEQ_BUSY_DRV0));
 +	}
 +	wr(gmu, GMU_RSCC_CONTROL_REQ, 0);
-+	IOLog("POLARIS GPU: RSC status after wake %08x ack %08x busy %08x\n",
++	IOLog("POLARIS GPU: RSC status after cycle %08x ack %08x busy %08x\n",
 +	    rd(gmu, GMU_GPU_RSCC_RSC_STATUS0_DRV0), rd(gmu, GMU_RSCC_CONTROL_ACK),
 +	    rd(gmu, GMU_RSCC_SEQ_BUSY_DRV0));
 +}
