@@ -2,7 +2,7 @@ diff --git a/iokit/Kernel/arm/PolarisAdreno.cpp b/iokit/Kernel/arm/PolarisAdreno
 new file mode 100644
 --- /dev/null
 +++ b/iokit/Kernel/arm/PolarisAdreno.cpp
-@@ -0,0 +1,2635 @@
+@@ -0,0 +1,2639 @@
 +/*
 + * polaris: the Adreno 630 of the Xiaomi Mi MIX 2S (SDM845 v2, A630v2) for
 + * programs to draw with, behind the hardware interface (redwood_gpu_*) that
@@ -1776,11 +1776,8 @@ new file mode 100644
 +	 * OPTION_AT_LEAST<<28 | perf_idx, bw.raw=0xff (no bandwidth change).
 +	 * The HFI header is still HFI_MSG_CMD, so the GMU answers. */
 +	uint32_t dcvs_vote[4] = { 0, 0, (3u << 28) | 1, 0xff };
-+	if (hfi_send(30, dcvs_vote, 4, &verdict) && verdict == 0) {
-+		IOLog("POLARIS GPU: HFI DCVS vote accepted (perf 1, at-least)\n");
-+	} else {
-+		IOLog("POLARIS GPU: HFI DCVS vote failed (verdict %u)\n", verdict);
-+	}
++	hfi_send_noblock(30, dcvs_vote, 4);
++	IOLog("POLARIS GPU: HFI DCVS vote sent (perf 1, at-least, nonblock)\n");
 +	return true;
 +}
 +
@@ -2111,13 +2108,20 @@ new file mode 100644
 +		IOLog("POLARIS GPU: HFI messages before rail-on failed; continuing to sweep\n");
 +	}
 +	dump_gmu("msgs-pre");
-+	/* The DCVS vote may power the rail without any OOB grant.  Give the
-+	 * GMU time to run its RPMh sequence, then check the rail state. */
-+	IODelay(10000);
-+	IOLog("POLARIS GPU: after HFI DCVS sp=%08x gdscr=%08x rpmh=%08x\n",
++	/* The DCVS vote may power the rail without any OOB grant.  The GMU's
++	 * RPMh sequence is not instantaneous: poll for up to 500 ms. */
++	bool rail_up = false;
++	for (int i = 0; i < 50; i++) {
++		if ((rd(gmu, GMU_SPTPRAC_PWR_CLK_STATUS) & 0xc0) == 0) {
++			rail_up = true;
++			break;
++		}
++		IODelay(10000);
++	}
++	IOLog("POLARIS GPU: after HFI DCVS sp=%08x gdscr=%08x rpmh=%08x rail_up=%d\n",
 +	    rd(gmu, GMU_SPTPRAC_PWR_CLK_STATUS), rd(gpucc, GPUCC_GX_GDSCR),
-+	    rd(gmu, GMU_RPMH_POWER_STATE));
-+	if ((rd(gmu, GMU_SPTPRAC_PWR_CLK_STATUS) & 0xc0) == 0) {
++	    rd(gmu, GMU_RPMH_POWER_STATE), rail_up);
++	if (rail_up) {
 +		IOLog("POLARIS GPU: GX rail is up via the HFI DCVS vote\n");
 +		core_up = true;
 +		dump_gmu("core");
