@@ -2,7 +2,7 @@ diff --git a/iokit/Kernel/arm/PolarisAdreno.cpp b/iokit/Kernel/arm/PolarisAdreno
 new file mode 100644
 --- /dev/null
 +++ b/iokit/Kernel/arm/PolarisAdreno.cpp
-@@ -0,0 +1,2629 @@
+@@ -0,0 +1,2635 @@
 +/*
 + * polaris: the Adreno 630 of the Xiaomi Mi MIX 2S (SDM845 v2, A630v2) for
 + * programs to draw with, behind the hardware interface (redwood_gpu_*) that
@@ -1728,11 +1728,14 @@ new file mode 100644
 +		if (!ok) {
 +			perf.gx_votes[i].vote.raw = 0;
 +		}
-+		perf.gx_votes[i].freq = freqs[i];
++		/* HFI perf table frequencies are kHz (vendor hfi_send_perftbl
++		 * divides gpu_freqs by 1000).  Sending Hz made every vote
++		 * 1000x too high and the rail never came up. */
++		perf.gx_votes[i].freq = freqs[i] / 1000;
 +	}
-+	perf.cx_votes[0].freq = 200000;
-+	perf.cx_votes[1].freq = 500000;
-+	perf.cx_votes[2].freq = 710000;
++	perf.cx_votes[0].freq = 200;
++	perf.cx_votes[1].freq = 500;
++	perf.cx_votes[2].freq = 710;
 +	if (hfi_send(HFI_MSG_PERF_TBL, &perf, sizeof(perf) / 4, &verdict) && verdict == 0) {
 +		IOLog("POLARIS GPU: HFI perf table accepted\n");
 +	} else {
@@ -1762,18 +1765,21 @@ new file mode 100644
 +		IOLog("POLARIS GPU: HFI bandwidth table failed (verdict %u)\n", verdict);
 +	}
 +
-+	/* A630 HFI has no CORE_FW_START (14); H2F_MSG_DCVS_VOTE (30) is the
-+	 * power request.  ack_type=0 (ACK_NONBLOCK), freq.raw is
-+	 * OPTION_AT_LEAST<<28 | perf_idx, bw.raw=0xff (no bandwidth change).
-+	 * The vendor sends this without waiting for an answer. */
-+	uint32_t dcvs_vote[4] = { 0, 0, (3u << 28) | 1, 0xff };
-+	hfi_send_noblock(30, dcvs_vote, 4);
-+	IOLog("POLARIS GPU: HFI DCVS vote sent (perf 1, at-least)\n");
-+
 +	if (hfi_send(HFI_MSG_TEST, &test, sizeof(test) / 4, &verdict) && verdict == 0) {
 +		IOLog("POLARIS GPU: HFI TEST accepted (register DCVS mode)\n");
 +	} else {
 +		IOLog("POLARIS GPU: HFI TEST failed (verdict %u)\n", verdict);
++	}
++
++	/* A630 HFI has no CORE_FW_START (14); H2F_MSG_DCVS_VOTE (30) is the
++	 * power request.  ack_type=0 (ACK_NONBLOCK), freq.raw is
++	 * OPTION_AT_LEAST<<28 | perf_idx, bw.raw=0xff (no bandwidth change).
++	 * The HFI header is still HFI_MSG_CMD, so the GMU answers. */
++	uint32_t dcvs_vote[4] = { 0, 0, (3u << 28) | 1, 0xff };
++	if (hfi_send(30, dcvs_vote, 4, &verdict) && verdict == 0) {
++		IOLog("POLARIS GPU: HFI DCVS vote accepted (perf 1, at-least)\n");
++	} else {
++		IOLog("POLARIS GPU: HFI DCVS vote failed (verdict %u)\n", verdict);
 +	}
 +	return true;
 +}
