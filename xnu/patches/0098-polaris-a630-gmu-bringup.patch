@@ -2,7 +2,7 @@ diff --git a/iokit/Kernel/arm/PolarisAdreno.cpp b/iokit/Kernel/arm/PolarisAdreno
 new file mode 100644
 --- /dev/null
 +++ b/iokit/Kernel/arm/PolarisAdreno.cpp
-@@ -0,0 +1,2412 @@
+@@ -0,0 +1,2525 @@
 +/*
 + * polaris: the Adreno 630 of the Xiaomi Mi MIX 2S (SDM845 v2, A630v2) for
 + * programs to draw with, behind the hardware interface (redwood_gpu_*) that
@@ -1781,6 +1781,109 @@ new file mode 100644
 +	    rd(gmu, GMU_HOST2GMU_INTR_CLR), rd(gmu, GMU_GMU2HOST_INTR_SET));
 +}
 +
++/* The whole GMU host interrupt window: the ACK may be in any of these
++ * words, and the A630 firmware's mapping does not match the vendor header. */
++static void
++dump_irq(const char *tag)
++{
++	if (!gpu_dump) {
++		return;
++	}
++	IOLog("POLARIS GPU: IRQ[%s] hfi=%08x/%08x/%08x/%08x/%08x/%08x/%08x\n",
++	    tag, rd(gmu, GMU_WORD(0x5180)), rd(gmu, GMU_WORD(0x5181)),
++	    rd(gmu, GMU_WORD(0x5182)), rd(gmu, GMU_WORD(0x5183)),
++	    rd(gmu, GMU_WORD(0x5184)), rd(gmu, GMU_WORD(0x5185)),
++	    rd(gmu, GMU_WORD(0x5186)));
++	IOLog("POLARIS GPU: IRQ[%s] irq=%08x/%08x/%08x/%08x/%08x/%08x/%08x\n",
++	    tag, rd(gmu, GMU_WORD(0x5190)), rd(gmu, GMU_WORD(0x5191)),
++	    rd(gmu, GMU_WORD(0x5192)), rd(gmu, GMU_WORD(0x5193)),
++	    rd(gmu, GMU_WORD(0x5194)), rd(gmu, GMU_WORD(0x5195)),
++	    rd(gmu, GMU_WORD(0x5196)));
++}
++
++static void
++dump_pdc(const char *tag)
++{
++	if (!gpu_dump) {
++		return;
++	}
++	IOLog("POLARIS GPU: PDC[%s] en=%08x seq=%08x tcs1_en=%08x tcs1_wait=%08x tcs1_ctl=%08x tcs3_en=%08x tcs3_wait=%08x tcs3_ctl=%08x\n",
++	    tag, rd(pdc, 4 * PDC_GPU_ENABLE_PDC), rd(pdc, 4 * PDC_GPU_SEQ_START_ADDR),
++	    rd(pdc, 4 * PDC_GPU_TCS1_CMD_ENABLE_BANK), rd(pdc, 4 * PDC_GPU_TCS1_CMD_WAIT_FOR_CMPL_BANK),
++	    rd(pdc, 4 * PDC_GPU_TCS1_CONTROL), rd(pdc, 4 * PDC_GPU_TCS3_CMD_ENABLE_BANK),
++	    rd(pdc, 4 * PDC_GPU_TCS3_CMD_WAIT_FOR_CMPL_BANK), rd(pdc, 4 * PDC_GPU_TCS3_CONTROL));
++}
++
++/* One boot, all eight host2gmu request bits: show which INFO/RAW word and
++ * which rail/RSC state each one changes.  This is the empirical map the
++ * vendor header cannot give us for this firmware. */
++static void
++oob_sweep(void)
++{
++	if (!gpu_dump) {
++		return;
++	}
++	IOLog("POLARIS GPU: OOB sweep start\n");
++	for (uint32_t bit = 16; bit <= 23; bit++) {
++		uint32_t ack = bit + 8;
++
++		wr(gmu, GMU_GMU2HOST_INTR_CLR, 0xffffffff);
++		wr(gmu, GMU_HOST2GMU_INTR_SET, 0xff000000u);
++		IODelay(1000);
++		IOLog("POLARIS GPU: OOB[%u] pre set=%08x ack=%08x\n", bit, 1u << bit, 1u << ack);
++		dump_irq("pre");
++		wr(gmu, GMU_HOST2GMU_INTR_SET, 1u << bit);
++		IODelay(20000);
++		IOLog("POLARIS GPU: OOB[%u] post set=%08x ack=%08x state=%08x status0=%08x tcs=%08x/%08x/%08x/%08x sptprac=%08x gdscr=%08x ao_int=%08x ao_busy=%08x\n",
++		    bit, 1u << bit, 1u << ack, rd(gmu, GMU_RPMH_POWER_STATE),
++		    rd(gmu, GMU_GPU_RSCC_RSC_STATUS0_DRV0),
++		    rd(gmu, GMU_RSCC_TCS0_DRV0_STATUS), rd(gmu, GMU_RSCC_TCS1_DRV0_STATUS),
++		    rd(gmu, GMU_RSCC_TCS2_DRV0_STATUS), rd(gmu, GMU_RSCC_TCS3_DRV0_STATUS),
++		    rd(gmu, GMU_SPTPRAC_PWR_CLK_STATUS), rd(gpucc, GPUCC_GX_GDSCR),
++		    rd(gmu, GMU_AO_HOST_INTERRUPT_STATUS), rd(gmu, GMU_AO_GPU_CX_BUSY_STATUS));
++		dump_irq("post");
++		wr(gmu, GMU_HOST2GMU_INTR_SET, 1u << ack);
++		wr(gmu, GMU_GMU2HOST_INTR_CLR, 0xffffffff);
++		IODelay(1000);
++	}
++	IOLog("POLARIS GPU: OOB sweep done\n");
++}
++
++/* Every GX ARC vote with the vendor BOOT_SLUMBER request bit: if the rail
++ * comes up for one index, the vote table, not the interrupt, was the
++ * problem. */
++static void
++vote_sweep(void)
++{
++	if (!gpu_dump) {
++		return;
++	}
++	IOLog("POLARIS GPU: vote sweep start\n");
++	for (uint32_t gx = 0; gx <= 8; gx++) {
++		wr(gmu, GMU_GMU2HOST_INTR_CLR, 0xffffffff);
++		wr(gmu, GMU_HOST2GMU_INTR_SET, 0xff000000u);
++		IODelay(1000);
++		wr(gmu, GMU_BOOT_SLUMBER_OPTION, 0);
++		wr(gmu, GMU_GX_VOTE_IDX, gx);
++		wr(gmu, GMU_MX_VOTE_IDX, 0);
++		wr(gmu, GMU_HOST2GMU_INTR_SET, 1u << 22);
++		IODelay(20000);
++		IOLog("POLARIS GPU: VOTE[gx=%u] irq=%08x/%08x/%08x/%08x/%08x/%08x/%08x state=%08x status0=%08x tcs=%08x/%08x/%08x/%08x sptprac=%08x gdscr=%08x\n",
++		    gx, rd(gmu, GMU_WORD(0x5190)), rd(gmu, GMU_WORD(0x5191)),
++		    rd(gmu, GMU_WORD(0x5192)), rd(gmu, GMU_WORD(0x5193)),
++		    rd(gmu, GMU_WORD(0x5194)), rd(gmu, GMU_WORD(0x5195)),
++		    rd(gmu, GMU_WORD(0x5196)),
++		    rd(gmu, GMU_RPMH_POWER_STATE), rd(gmu, GMU_GPU_RSCC_RSC_STATUS0_DRV0),
++		    rd(gmu, GMU_RSCC_TCS0_DRV0_STATUS), rd(gmu, GMU_RSCC_TCS1_DRV0_STATUS),
++		    rd(gmu, GMU_RSCC_TCS2_DRV0_STATUS), rd(gmu, GMU_RSCC_TCS3_DRV0_STATUS),
++		    rd(gmu, GMU_SPTPRAC_PWR_CLK_STATUS), rd(gpucc, GPUCC_GX_GDSCR));
++		wr(gmu, GMU_HOST2GMU_INTR_SET, 1u << 30);
++		wr(gmu, GMU_GMU2HOST_INTR_CLR, 0xffffffff);
++		IODelay(1000);
++	}
++	IOLog("POLARIS GPU: vote sweep done\n");
++}
++
 +static void
 +dump_gmu_log(const char *tag)
 +{
@@ -1884,6 +1987,7 @@ new file mode 100644
 +	dump_arc("arc");
 +	rsc_pdc_program();
 +	dump_rsc("pdc");
++	dump_pdc("pdc");
 +	if (!gmu_load_fw()) {
 +		return false;
 +	}
@@ -1895,14 +1999,23 @@ new file mode 100644
 +	rsc_wake();
 +	dump_gmu("rsc");
 +	dump_rsc("rsc");
++	dump_irq("rsc");
 +	if (!gmu_start()) {
 +		return false;
 +	}
 +	dump_gmu("start");
++	dump_irq("start");
 +	dump_hfi("start");
 +	if (!gmu_gfx_rail_on()) {
 +		dump_gmu("rail-fail");
 +		dump_rsc("rail-fail");
++		dump_pdc("rail-fail");
++		dump_irq("rail-fail");
++		oob_sweep();
++		vote_sweep();
++		dump_gmu("sweep");
++		dump_rsc("sweep");
++		dump_irq("sweep");
 +		dump_gmu_log("rail-fail");
 +		dump_gmu_nmi("rail-fail");
 +		return false;
